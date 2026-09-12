@@ -2,8 +2,7 @@
 ABU Robocon 2027 Phase 1 2Dシムの一括起動launchファイル。
 
 br_sim_bridge_node, br_referee_node, br_observation_node, br_visualizer_node,
-br_decision_tr_node, br_decision_br_nodeをまとめて起動する
-(RFC-Tsudanuma方式のsim_start.sh相当)。
+br_decision_tr_node, br_decision_br_nodeをまとめて起動する。
 
 起動方法:
     ros2 launch br_strategy_sim launch_simulator.py

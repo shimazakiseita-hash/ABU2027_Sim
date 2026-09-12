@@ -1,6 +1,6 @@
 # ABU Robocon 2027 BR/TR トピック契約仕様
 
-RFC-Tsudanuma (strategy_sim) の設計パターンを踏襲する：
+以下の設計パターンを踏襲する：
 - 真値トピックとノイズ有り観測トピックを分離する
 - ロボットへの指令は単一トピックで受ける（実機/シムで意思決定ノード側は変更不要）
 - 得点計算・違反判定（審判相当）は意思決定ノードと分離した独立ノードにする
@@ -41,7 +41,7 @@ br_decision パッケージからは購読しない規約とする。
 | `/detected_blocks` | カスタム msg `DetectedBlockArray` | カメラ視野内で認識したブロック（位置・推定色） | 視野外は含まれない |
 | `/detected_mustika` | `geometry_msgs/PointStamped` | 検出したムスティカ位置（視野内のみ） | - |
 
-起動時オプション（RFC-Tsudanumaの`observation_noise:=true/false`を踏襲）：
+起動時オプション：
 
 ```
 ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
