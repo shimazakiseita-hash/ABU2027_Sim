@@ -11,8 +11,15 @@ ABU Robocon 2027 Phase 1 2Dシム: TR側の意思決定ノード(br_decision_tr_
 受渡しは「受渡しエリアに置く/受渡しエリアで拾う」という物理的な状態
 (held_by, 位置)だけで成立させる(HANDOFFの方針通りの最小実装)。
 
-最初のゴールはアースブロック1個をTRが把持し、受渡しエリアで手放す
-ところまで。塔の完成(アース2段+スカイ1段)は後回し。
+1つの建築スポットに完成塔(アース2段+スカイ1段)を作るところまでを対象に
+する。TRはBRの状態を直接知らない(通信プロトコルを持たない設計)ため、
+自分の配送回数(_delivery_index)だけを頼りに「今何個目を届けているか」を
+数え、DELIVERY_SEQUENCEの順序で配送する種別を切り替える。BR側
+(br_decision_br_node.BUILD_SEQUENCE)と同じ順序を独立に前提として動く。
+両者が受渡しエリアを介して1対1で同期する(次を取りに行くのは前回分を
+BRが受け取った後)前提のため、この前提が崩れる状況には対応していない。
+状態名はEARTH限定の最初のゴール時のまま(GRASP_EARTH_BLOCK等)だが、
+実際に対象とする種別はDELIVERY_SEQUENCEに従う。
 """
 
 from __future__ import annotations
@@ -30,10 +37,22 @@ from . import field_constants as fc
 from .decision_common import block_arrival_threshold_mm, drive_toward, tr_transfer_release_point
 
 _EARTH_BLOCK_ARRIVAL_THRESHOLD_MM = block_arrival_threshold_mm(fc.EARTH_BLOCK_SIZE / 2)
+_SKY_BLOCK_ARRIVAL_THRESHOLD_MM = block_arrival_threshold_mm(fc.SKY_BLOCK_SIZE / 2)
+_ARRIVAL_THRESHOLD_BY_TYPE = {'earth': _EARTH_BLOCK_ARRIVAL_THRESHOLD_MM, 'sky': _SKY_BLOCK_ARRIVAL_THRESHOLD_MM}
+
 _STORAGE_AREA_CENTER = (
     fc.STORAGE_AREA_ORIGIN[0] + fc.STORAGE_AREA_SIZE[0] / 2,
     fc.STORAGE_AREA_ORIGIN[1] + fc.STORAGE_AREA_SIZE[1] / 2,
 )
+_SHARED_AREA_CENTER = (
+    fc.GROUND_SHARED_AREA_ORIGIN[0] + fc.GROUND_SHARED_AREA_SIZE[0] / 2,
+    fc.GROUND_SHARED_AREA_ORIGIN[1] + fc.GROUND_SHARED_AREA_SIZE[1] / 2,
+)
+_SOURCE_AREA_CENTER_BY_TYPE = {'earth': _STORAGE_AREA_CENTER, 'sky': _SHARED_AREA_CENTER}
+
+# 塔の構成順(アース2段->スカイ1段)。br_decision_br_node.BUILD_SEQUENCEと
+# 対応させること(要素数・種別の順序を一致させる)。
+DELIVERY_SEQUENCE = ('earth', 'earth', 'sky')
 
 CONTROL_HZ = 10.0
 GRASP_TIMEOUT_TICKS = int(CONTROL_HZ * 5)  # 5秒粘って掴めなければ諦める
@@ -46,6 +65,7 @@ class TrState(Enum):
     GRASP_EARTH_BLOCK = auto()
     APPROACH_TRANSFER_AREA = auto()
     RELEASE_IN_TRANSFER = auto()
+    DONE = auto()
 
 
 class BrDecisionTrNode(Node):
@@ -57,6 +77,7 @@ class BrDecisionTrNode(Node):
         self._state = TrState.IDLE
         self._target_block_id: str | None = None
         self._timeout_counter = 0
+        self._delivery_index = 0
 
         self.pub_cmd_vel = self.create_publisher(Twist, '/tr_cmd_vel', 10)
         self.pub_gripper = self.create_publisher(GripperCmd, '/tr_gripper_cmd', 10)
@@ -79,16 +100,18 @@ class BrDecisionTrNode(Node):
     def _find_block(self, block_id: str):
         return next((b for b in self._blocks.blocks if b.id == block_id), None)
 
-    def _nearest_free_earth_block(self):
+    def _current_delivery_type(self) -> str:
+        return DELIVERY_SEQUENCE[self._delivery_index]
+
+    def _nearest_free_block(self, block_type: str):
         cur = self._current_uv()
-        # ストレージ付近(u座標がこの範囲内)のブロックだけを対象にする。
-        # 制限が無いと、受渡しエリア付近に自分がさっき届けたブロックが
-        # 一番近くなり、それを再度拾ってしまう(統合テストで発覚)。
-        storage_u_max = fc.STORAGE_AREA_ORIGIN[0] + fc.STORAGE_AREA_SIZE[0] + 500.0
-        candidates = [
-            b for b in self._blocks.blocks
-            if b.block_type == 'earth' and b.held_by == 'none' and b.position.x <= storage_u_max
-        ]
+        candidates = [b for b in self._blocks.blocks if b.block_type == block_type and b.held_by == 'none']
+        if block_type == 'earth':
+            # ストレージ付近(u座標がこの範囲内)のブロックだけを対象にする。
+            # 制限が無いと、受渡しエリア付近に自分がさっき届けたブロックが
+            # 一番近くなり、それを再度拾ってしまう(統合テストで発覚)。
+            storage_u_max = fc.STORAGE_AREA_ORIGIN[0] + fc.STORAGE_AREA_SIZE[0] + 500.0
+            candidates = [b for b in candidates if b.position.x <= storage_u_max]
         if not candidates:
             return None
         return min(candidates, key=lambda b: math.hypot(b.position.x - cur[0], b.position.y - cur[1]))
@@ -102,20 +125,22 @@ class BrDecisionTrNode(Node):
             return
 
         if self._state == TrState.APPROACH_STORAGE:
+            delivery_type = self._current_delivery_type()
+            threshold = _ARRIVAL_THRESHOLD_BY_TYPE[delivery_type]
             target = self._find_block(self._target_block_id) if self._target_block_id else None
             if target is None:
-                target = self._nearest_free_earth_block()
+                target = self._nearest_free_block(delivery_type)
                 if target is None:
-                    # 受渡しエリア付近など、視野内(2000mm圏)にストレージのブロックが
-                    # 無い場合は、具体的な目標が見えるまでストレージ全体の方向へ
+                    # 視野内(2000mm圏)に対象種別のブロックが無い場合は、
+                    # 具体的な目標が見えるまで供給元エリア全体の方向へ
                     # 大まかに寄る(何もせず待つと視野に入らず永久に停止してしまう)
-                    twist, _arrived = drive_toward(self._current_uv(), _STORAGE_AREA_CENTER)
+                    twist, _arrived = drive_toward(self._current_uv(), _SOURCE_AREA_CENTER_BY_TYPE[delivery_type])
                     self.pub_cmd_vel.publish(twist)
                     return
                 self._target_block_id = target.id
             twist, arrived = drive_toward(
                 self._current_uv(), (target.position.x, target.position.y),
-                arrival_threshold_mm=_EARTH_BLOCK_ARRIVAL_THRESHOLD_MM,
+                arrival_threshold_mm=threshold,
             )
             self.pub_cmd_vel.publish(twist)
             if arrived:
@@ -123,6 +148,7 @@ class BrDecisionTrNode(Node):
                 self._timeout_counter = 0
 
         elif self._state == TrState.GRASP_EARTH_BLOCK:
+            threshold = _ARRIVAL_THRESHOLD_BY_TYPE[self._current_delivery_type()]
             target = self._find_block(self._target_block_id)
             self._timeout_counter += 1
             if target is not None:
@@ -130,7 +156,7 @@ class BrDecisionTrNode(Node):
                 # 待つだけでなく引き続き目標へ寄せ続ける
                 twist, _arrived = drive_toward(
                     self._current_uv(), (target.position.x, target.position.y),
-                    arrival_threshold_mm=_EARTH_BLOCK_ARRIVAL_THRESHOLD_MM,
+                    arrival_threshold_mm=threshold,
                 )
                 self.pub_cmd_vel.publish(twist)
             else:
@@ -156,7 +182,16 @@ class BrDecisionTrNode(Node):
             self._timeout_counter += 1
             if self._timeout_counter > RELEASE_SETTLE_TICKS:
                 self._target_block_id = None
-                self._state = TrState.APPROACH_STORAGE
+                self._delivery_index += 1
+                if self._delivery_index >= len(DELIVERY_SEQUENCE):
+                    self._state = TrState.DONE
+                else:
+                    self._state = TrState.APPROACH_STORAGE
+
+        elif self._state == TrState.DONE:
+            # 塔に必要な分(DELIVERY_SEQUENCE)を届け終えた。今回のゴールは
+            # 単一の塔の完成までなので、以降は何もせず停止する。
+            self.pub_cmd_vel.publish(Twist())
 
 
 def main(args=None):

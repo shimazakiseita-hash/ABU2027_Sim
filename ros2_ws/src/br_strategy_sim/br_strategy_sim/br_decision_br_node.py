@@ -11,10 +11,14 @@ ABU Robocon 2027 Phase 1 2Dシム: BR側の意思決定ノード(br_decision_br_
 WAIT_FOR_BLOCKは/detected_blocksをポーリングし、受渡しエリア内に
 held_by="none"のブロックが現れるのを待つだけの単純な実装(HANDOFF方針通り)。
 
-最初のゴールはアースブロック1個を受渡しエリアで拾い、建築スポットへ設置して
-得点が入るところまで。塔の完成(アース2段+スカイ1段)は、このループが証明
-できてから同じ処理を繰り返す形で後回しにする(現状はBUILD_SPOT_IDを固定した
-1個限りの実装)。
+1つの建築スポット(BUILD_SPOT_ID固定)に完成塔(アース2段+スカイ1段)を
+作るところまでを対象にする。「今どの段を作っているか」をBUILD_SEQUENCE上の
+インデックス(_layer_index)として保持し、層ごとに「受渡しエリアで待つ対象の
+種別」と「/br_build_actionのaction_type」を切り替える。TR側
+(br_decision_tr_node.DELIVERY_SEQUENCE)と同じ順序を独立に前提として動く
+(通信プロトコルは持たない設計のため、両者とも自分のカウンタだけを頼りに
+同期する)。塔が完成したらTOWER_COMPLETEへ遷移し、以降は停止する
+(このゴールでは1塔のみを対象とし、複数塔・複数スポットへの拡張は後回し)。
 """
 
 from __future__ import annotations
@@ -37,6 +41,15 @@ BUILD_SETTLE_TICKS = int(CONTROL_HZ * 0.5)
 # 最初のゴールでは固定の建築スポットへ運ぶ(複数スポットへの割り振りは後回し)
 BUILD_SPOT_ID = 'l1_red_1'
 
+# 塔の構成順(アース2段->スカイ1段)。各層で「待つ対象の種別」と
+# 「/br_build_actionのaction_type」の組を持つ。
+# br_decision_tr_node.DELIVERY_SEQUENCEと対応させること(要素数・種別の順序を一致させる)。
+BUILD_SEQUENCE = (
+    ('earth', 'PLACE_EARTH_BLOCK'),
+    ('earth', 'PLACE_EARTH_BLOCK'),
+    ('sky', 'PLACE_SKY_BLOCK'),
+)
+
 
 class BrState(Enum):
     IDLE = auto()
@@ -45,6 +58,7 @@ class BrState(Enum):
     GRASP_FROM_TRANSFER = auto()
     APPROACH_BUILD_SPOT = auto()
     RELEASE_AND_BUILD = auto()
+    TOWER_COMPLETE = auto()
 
 
 def _build_spot_center(build_spot_id: str) -> tuple[float, float]:
@@ -63,6 +77,7 @@ class BrDecisionBrNode(Node):
         self._state = BrState.IDLE
         self._target_block_id: str | None = None
         self._timeout_counter = 0
+        self._layer_index = 0
 
         self.pub_cmd_vel = self.create_publisher(Twist, '/br_cmd_vel', 10)
         self.pub_gripper = self.create_publisher(GripperCmd, '/br_gripper_cmd', 10)
@@ -87,9 +102,11 @@ class BrDecisionBrNode(Node):
         return next((b for b in self._blocks.blocks if b.id == block_id), None)
 
     def _find_waiting_block(self):
+        expected_type, _action_type = BUILD_SEQUENCE[self._layer_index]
         origin, size = transfer_area_rect()
         for b in self._blocks.blocks:
-            if b.held_by == 'none' and point_in_rect(b.position.x, b.position.y, origin, size):
+            if (b.held_by == 'none' and b.block_type == expected_type
+                    and point_in_rect(b.position.x, b.position.y, origin, size)):
                 return b
         return None
 
@@ -149,13 +166,24 @@ class BrDecisionBrNode(Node):
 
         elif self._state == BrState.RELEASE_AND_BUILD:
             self.pub_cmd_vel.publish(Twist())
+            _expected_type, action_type = BUILD_SEQUENCE[self._layer_index]
             self.pub_build_action.publish(
-                BuildAction(action_type='PLACE_EARTH_BLOCK', target_build_spot_id=BUILD_SPOT_ID))
+                BuildAction(action_type=action_type, target_build_spot_id=BUILD_SPOT_ID))
             self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
             self._timeout_counter += 1
             if self._timeout_counter > BUILD_SETTLE_TICKS:
                 self._target_block_id = None
-                self._state = BrState.APPROACH_TRANSFER_AREA
+                self._layer_index += 1
+                if self._layer_index >= len(BUILD_SEQUENCE):
+                    self._state = BrState.TOWER_COMPLETE
+                else:
+                    self._state = BrState.APPROACH_TRANSFER_AREA
+
+        elif self._state == BrState.TOWER_COMPLETE:
+            # BUILD_SEQUENCE分の設置が完了した。今回のゴールは単一の塔の
+            # 完成までなので、以降は何もせず停止する。
+            self.pub_cmd_vel.publish(Twist())
+            self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
 
 
 def main(args=None):
