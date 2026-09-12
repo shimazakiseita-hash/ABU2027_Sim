@@ -28,12 +28,18 @@ COLOR_SHARED = (245, 240, 200)
 COLOR_BUILD_SPOT = (40, 100, 50)
 COLOR_PILLAR = (100, 62, 0)
 COLOR_TEXT = (20, 20, 20)
+# 公式ルールブック14章のColors and Materials Specificationより
+COLOR_TRANSFER_RED = (245, 170, 60)
+COLOR_TRANSFER_BLUE = (60, 170, 245)
 
-# 動的要素(競技物・ロボット)の描画色
-COLOR_EARTH_RED = (200, 60, 40)
-COLOR_EARTH_BLUE = (40, 70, 200)
-COLOR_SKY_RED = (230, 130, 120)
-COLOR_SKY_BLUE = (120, 160, 230)
+# 動的要素(競技物・ロボット)の描画色。アース/スカイの赤青は公式ルールブック
+# 14章のGame Objects表と同じ値(Start Zoneの赤青とも同色)。
+COLOR_EARTH_RED = (223, 34, 34)
+COLOR_EARTH_BLUE = (50, 0, 255)
+COLOR_SKY_RED = (223, 34, 34)
+COLOR_SKY_BLUE = (50, 0, 255)
+# ムスティカ(公式には"Original ball color"としか指定が無いバレーボールなので
+# 独自の近似色。ロボットの色も指定が無く独自の選択)
 COLOR_MUSTIKA = (180, 150, 40)
 COLOR_ROBOT_BR = (30, 30, 30)
 COLOR_ROBOT_TR = (90, 90, 90)
@@ -87,6 +93,9 @@ def draw_static_field(surface, font):
 
     for _spot_id, _level, _team, origin in fc.BUILD_SPOTS:
         draw_rect_mm(surface, COLOR_BUILD_SPOT, origin, fc.BUILD_SPOT_SIZE)
+
+    draw_rect_mm(surface, COLOR_TRANSFER_RED, fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE, width=2)
+    draw_label(surface, font, "Transfer", fc.TRANSFER_AREA_ORIGIN)
 
     draw_rect_mm(surface, COLOR_L2, fc.L2_ORIGIN, (fc.L2_SIZE, fc.L2_SIZE), width=2)
     draw_label(surface, font, "L2 (3000x3000)", (fc.L2_ORIGIN[0], fc.L2_ORIGIN[1] + fc.L2_SIZE))

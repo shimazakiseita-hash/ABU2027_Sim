@@ -8,6 +8,9 @@ RFC-Tsudanuma (strategy_sim) の設計パターンを踏襲する：
 この文書がインターフェースの正。実装（br_decision, br_strategy_sim, br_hw_bridge,
 br_perception）はこの契約に従う。契約を変える場合はこのファイルを先に直す。
 
+条文の引用は `docs/Robocon_2027_Rulebook_v1-1.pdf`（公式ルールブック英語版、
+全28ページ）を一次情報源とする。
+
 ## 命名規則
 
 - ロボット種別のプレフィックスを付ける: `/tr_*`, `/br_*`
@@ -54,7 +57,7 @@ ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
 | `/tr_cmd_vel` | `geometry_msgs/Twist` | TR本体の移動指令（手動操縦時は現行の`/joy`経路から変換） |
 | `/br_gripper_cmd` | カスタム msg `GripperCmd` | BRの開閉・目標把持力 |
 | `/tr_gripper_cmd` | カスタム msg `GripperCmd` | TRの開閉・目標把持力（br_decision実装時に追加。契約当初`/br_gripper_cmd`のみ定義していたが、TRも自前のグリッパーで把持・受渡しを行うため追加） |
-| `/br_build_action` | カスタム msg `BuildAction` | 積み上げの高レベル指令（例: PLACE_EARTH_BLOCK, PLACE_SKY_BLOCK, PLACE_MUSTIKA） |
+| `/br_build_action` | カスタム msg `BuildAction` | 積み上げの高レベル指令（PLACE_EARTH_BLOCK, PLACE_SKY_BLOCK, PLACE_MUSTIKA, FLIP_SKY_BLOCK） |
 
 `/br_cmd_vel`, `/tr_cmd_vel` の単位・座標系：
 - `linear.x`/`linear.y` は m/s、`angular.z` は rad/s（ROS標準単位のまま）
@@ -97,17 +100,34 @@ ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
   ストレージエリア・建築スポットの侵入のみ判定しており、L1の非共用エリア全体の
   正確な境界（共用エリアとの厳密な切り分け線）は未確定のため、それ以外の
   「非共用L1」への侵入は判定していない（要確認）
-- 6.3 受渡し違反：TR-BR間の受渡しが受渡しエリアの鉛直境界外で行われた場合
-  → `violation`(forced_retry=true)。4.4.3補足：受渡しはエリア境界内で完全に
-  行う必要があり、エリア境界内にいる限りTR-BR間の物理接触は許容される
+- 6.3 受渡し違反：以下のいずれか → `violation`(forced_retry=true)
+  1. TR-BR間の受渡しが受渡しエリアの鉛直境界外で解放/落下した場合
+  2. BRが、受渡しエリアの鉛直境界内に完全には収まっていない物体に触れた場合
+     （＝BRが把持した瞬間のブロック位置がエリア外）
+  4.4.3補足：受渡しはエリア境界内で完全に行う必要があり、エリア境界内にいる限り
+  TR-BR間の物理接触は許容される
 - 6.6 妨害（共用区域）：未実装（5秒間の意図的な進路妨害の判定にはタイマー管理が
   必要で、Phase1では未対応。要調整）
-- 7.2 設置済みブロックの移動（失格）：相手が正しく設置したブロックを意図的に
-  除去・移動・妨害する行為 → `violation`(type="disqualification", forced_retry
-  は意味を持たないため常にfalse。強制リトライではなく即座に失格＝敗戦扱い)
+- 7.2 設置済みアースブロックの移動（失格）：相手が正しく設置した**アース
+  ブロック**を意図的に除去・移動・妨害する行為 → `violation`(type="disqualification",
+  forced_retryは意味を持たないため常にfalse。強制リトライではなく即座に失格＝敗戦扱い)。
+  スカイブロックは対象外（3.5.8で「ひっくり返す/位置を変える」ことが正規の
+  "stealing"手段として認められているため、動かしても失格にはならない）
 - 6.4 場外・6.5 落下：未実装（ブロックがフィールド外に出た場合の永久除外、
   落下ブロックの扱いはPhase1では判定していない。要調整）
-- 得点計算：受渡し点・個別ブロック得点・ムスティカ奉納点（8章、SCORE_*定数）
+- 得点計算（8章、SCORE_*定数）：塔単位ではなくブロック単位で計算する
+  - 受渡し点：TRが受渡しエリアへ届けたブロック1個につき5点（8.1）
+  - アースブロック：設置した個人チームに得点が固定される（8.3.1）。上に他
+    チームのブロックが積まれても変わらない
+  - スカイブロック：得点は所有チームではなく**その時点の上面色**で決まる
+    （8.3.2）。ひっくり返す(`FLIP_SKY_BLOCK`)たびに得点の帰属が変わる
+  - 1つの建築スポットに赤アース+青アース+赤スカイのような**混成タワー**も
+    正規（8.4の実例通り）
+  - ムスティカ奉納点：250点（8.5）
+  - 秘蹟の要件（Sanctuary Mandate, 3.6/4.5.1）：共有エリアの塔を1つ以上含む
+    完成塔2つを満たすまでTRはムスティカを回収できない。Phase1はムスティカの
+    意思決定ロジック自体が未実装のため、この前提条件はまだ判定・強制していない
+    （要対応）
 
 ### 受渡し違反と建築設置の区別
 
@@ -151,6 +171,7 @@ float32 target_force
 
 # BuildAction.msg
 string action_type   # "PLACE_EARTH_BLOCK" | "PLACE_SKY_BLOCK" | "PLACE_MUSTIKA"
+                      # | "FLIP_SKY_BLOCK" (3.5.8、他チームの塔から奪う"stealing"用に追加)
 string target_build_spot_id
 
 # Violation.msg
@@ -168,12 +189,16 @@ int32 level          # 0=ground, 1=L1, 2=L2
 geometry_msgs/Point position
 int32 level
 
-# TowerState.msg (建築スポット1個分の積み上げ状態。br_referee_node実装時に追加)
+# TowerState.msg (建築スポット1個分の積み上げ状態。br_referee_node実装時に追加、
+# ルールブック8.3/8.4対応のため塔単位のteamからブロック単位のowner_teamsに変更)
 string build_spot_id
-int32 level           # 1=L1, 2=L2
-string team           # "red" | "blue" | "" (未確定/共用)
-string[] block_types  # 積み上げ順(下から上)。"earth" | "sky" | "mustika"
-string[] top_colors   # block_typesに対応。skyの上面色。earth/mustikaは ""
+int32 level             # 1=L1, 2=L2
+string[] block_types    # 積み上げ順(下から上)。"earth" | "sky"
+string[] owner_teams    # block_typesに対応。アースは設置した個人チームに固定
+                         # (8.3.1)。スカイは常に""(得点はowner_teamではなく
+                         # top_colorで決まるため)
+string[] top_colors     # block_typesに対応。skyの現在の上面色(8.3.2、
+                         # ひっくり返すたびに変わる)。earthは ""
 
 # TowerArray.msg (/true_state/tower_state用。br_referee_node実装時に追加)
 TowerState[] towers
