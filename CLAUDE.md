@@ -40,6 +40,8 @@ RFC-Tsudanuma（RoboCupヒューマノイドチーム）のstrategy_sim設計を
 
 ## 参照ドキュメント
 
+- `docs/Robocon_2027_Rulebook_v1-1.pdf` — 公式ルールブック英語版(全28ページ)。
+  条文の一次情報源。数値・ルール解釈で迷ったら必ずここを確認する
 - `docs/field_specs.md` — フィールド寸法・配置（ルールブック実測値、確定済み）
 - `docs/topic_contract.md` — ROS2トピック・メッセージ契約（インターフェースの正）
 - `reference/field_constants.py` — 上記specsをPython定数化したもの

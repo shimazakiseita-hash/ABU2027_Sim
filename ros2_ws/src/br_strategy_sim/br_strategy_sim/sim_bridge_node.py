@@ -16,9 +16,11 @@ br_referee_node/br_observation_nodeはこれを購読する)。
 
 /br_gripper_cmd, /tr_gripper_cmd を購読し、PhysicsBlock.update_holding
 経由でheld_byを判定する(取り違え防止のロジックはphysics_blocks.py参照)。
-/br_build_action を購読し、BRが現在保持しているブロックを対象の建築
-スポットへ実際に配置する(位置・levelを更新し、held_by="none"・placed=True
-にして/true_state/tower_stateへ積み上げ状態を反映する)。
+/br_build_action を購読し、PLACE_EARTH_BLOCK/PLACE_SKY_BLOCKならBRが現在
+保持しているブロックを対象の建築スポットへ実際に配置し(位置・levelを更新、
+held_by="none"・placed=True)、FLIP_SKY_BLOCKなら既に設置済みの最上段
+スカイブロックの上面色を反転する(ルールブック3.5.8のタワー"stealing")。
+いずれも/true_state/tower_stateへ反映する。
 
 重要な前提: heldブロックはKINEMATICに切り替えて直接追従させる設計
 (physics_blocks.py参照)なので、壁や他ブロックとの物理衝突をすり抜けられる。
@@ -231,9 +233,17 @@ class SimBridgeNode(Node):
 
     def _execute_pending_build_action(self) -> None:
         """
-        /br_build_actionを、BRが現在保持しているブロックに対する配置指令として
-        実行する。action_type(PLACE_EARTH_BLOCK等)とblock_typeの厳密な整合性
-        チェックは行わない(Phase1最初のゴールに向けた簡略化。要調整)。
+        /br_build_actionを実行する。action_typeは以下の2種類:
+        - PLACE_EARTH_BLOCK / PLACE_SKY_BLOCK: BRが現在保持しているブロックを
+          対象の建築スポットへ配置する(block_typeとの厳密な整合性チェックは
+          行わない。Phase1最初のゴールに向けた簡略化。要調整)。
+        - FLIP_SKY_BLOCK: 対象の建築スポットに既に設置されている(最上段の)
+          スカイブロックの上面色を反転する(ルールブック3.5.8の"stealing"。
+          BRが保持している必要はなく、位置的な近さも今は問わない簡略化)。
+        self._towersはbuild_spot_id -> {"level": int, "blocks": [PhysicsBlock, ...]}
+        で、実際のPhysicsBlockオブジェクトの参照を積み上げ順に保持する
+        (block_types/owner_teams/top_colorsはtower_state発行時に毎回そこから
+        導出するので、スカイブロックをひっくり返した結果が即座に反映される)。
         """
         if self._pending_build_action is None:
             return
@@ -243,7 +253,18 @@ class SimBridgeNode(Node):
         target = _build_spot_by_id(action.target_build_spot_id)
         if target is None:
             return
-        _spot_id, level, team, origin = target
+        spot_id, level, _team, origin = target
+
+        if action.action_type == 'FLIP_SKY_BLOCK':
+            tower = self._towers.get(spot_id)
+            if not tower or not tower['blocks']:
+                return
+            top_block = tower['blocks'][-1]
+            if top_block.block_type != 'sky':
+                return  # 最上段がスカイでなければ何もしない
+            top_block.top_color = (
+                fc.TeamColor.BLUE if top_block.top_color == fc.TeamColor.RED else fc.TeamColor.RED)
+            return
 
         held_block = next((b for b in self.blocks if b.held_by == 'br'), None)
         if held_block is None:
@@ -256,9 +277,8 @@ class SimBridgeNode(Node):
         held_block.body.velocity = (0, 0)
         held_block.placed = True
 
-        tower = self._towers.setdefault(
-            action.target_build_spot_id, {'level': level, 'team': team, 'blocks': []})
-        tower['blocks'].append((held_block.block_type, held_block.top_color))
+        tower = self._towers.setdefault(spot_id, {'level': level, 'blocks': []})
+        tower['blocks'].append(held_block)
 
     def _publish_true_state(self) -> None:
         self.pub_br_pose.publish(self._robot_to_pose_msg(self.br))
@@ -281,9 +301,11 @@ class SimBridgeNode(Node):
             tower = TowerState()
             tower.build_spot_id = spot_id
             tower.level = info['level']
-            tower.team = info['team']
-            tower.block_types = [bt for bt, _ in info['blocks']]
-            tower.top_colors = [tc for _, tc in info['blocks']]
+            tower.block_types = [b.block_type for b in info['blocks']]
+            # アースは設置した個人チームに固定(8.3.1)、スカイは所有権の概念が
+            # ないため空文字(得点判定はtop_colorで行う。_recompute_tower_score参照)
+            tower.owner_teams = [b.owner_team if b.block_type == 'earth' else '' for b in info['blocks']]
+            tower.top_colors = [b.top_color for b in info['blocks']]
             msg.towers.append(tower)
         return msg
 

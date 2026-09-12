@@ -34,9 +34,7 @@ def block_arrival_threshold_mm(block_half_size_mm: float) -> float:
 
 
 def transfer_area_rect() -> tuple[tuple[float, float], tuple[float, float]]:
-    off = fc.TRANSFER_AREA_L1_CORNER_OFFSET
-    origin = (fc.L1_ORIGIN[0] + off, fc.L1_ORIGIN[1] + off)
-    return origin, fc.TRANSFER_AREA_SIZE
+    return fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE
 
 
 def point_in_rect(x: float, y: float, origin: tuple[float, float], size: tuple[float, float]) -> bool:

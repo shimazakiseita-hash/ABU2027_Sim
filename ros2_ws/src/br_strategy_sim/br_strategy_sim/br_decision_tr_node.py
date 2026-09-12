@@ -54,6 +54,12 @@ _SOURCE_AREA_CENTER_BY_TYPE = {'earth': _STORAGE_AREA_CENTER, 'sky': _SHARED_ARE
 # 対応させること(要素数・種別の順序を一致させる)。
 DELIVERY_SEQUENCE = ('earth', 'earth', 'sky')
 
+# このノードは(BUILD_SPOT_IDと同様に)赤チーム固定の暫定実装。スカイブロックは
+# 得点(8.3.2)がowner_teamではなく現在の上面色で決まるため、自チームの色が
+# 上を向いている個体を選んで届ける(そうしないと届けたスカイブロックがBRの
+# 得点にならない)。ひっくり返す(FLIP_SKY_BLOCK)処理はまだ実装していない。
+OWN_TEAM = fc.TeamColor.RED
+
 CONTROL_HZ = 10.0
 GRASP_TIMEOUT_TICKS = int(CONTROL_HZ * 5)  # 5秒粘って掴めなければ諦める
 RELEASE_SETTLE_TICKS = int(CONTROL_HZ * 0.5)  # 解放コマンドが反映されるまでの待ち
@@ -112,6 +118,10 @@ class BrDecisionTrNode(Node):
             # 一番近くなり、それを再度拾ってしまう(統合テストで発覚)。
             storage_u_max = fc.STORAGE_AREA_ORIGIN[0] + fc.STORAGE_AREA_SIZE[0] + 500.0
             candidates = [b for b in candidates if b.position.x <= storage_u_max]
+        elif block_type == 'sky':
+            # 自チームの色が上を向いている個体だけを対象にする(得点はowner_team
+            # ではなく上面色で決まるため。8.3.2/OWN_TEAM参照)
+            candidates = [b for b in candidates if b.top_color == OWN_TEAM]
         if not candidates:
             return None
         return min(candidates, key=lambda b: math.hypot(b.position.x - cur[0], b.position.y - cur[1]))

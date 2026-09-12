@@ -1,6 +1,7 @@
 """
 ABU Robocon 2027 フィールド定数定義
-出典: field_specs.md (ルールブック v1.0 + 公式フィールド図の実測値)
+出典: field_specs.md (docs/Robocon_2027_Rulebook_v1-1.pdf 公式ルールブック v1.0 +
+公式フィールド図の実測値)
 
 単位は全て mm。座標系:
   原点(0,0)  : 赤チーム側、ランプ/スタートゾーンに近い角
@@ -107,6 +108,12 @@ STAIR_STEP_HEIGHT = 150
 # ============================================================
 TRANSFER_AREA_SIZE = (1000, 1000)
 TRANSFER_AREA_L1_CORNER_OFFSET = 750  # L1角からのオフセット(実測値)
+# 受渡しエリアの原点。複数箇所(br_referee_node, decision_common,
+# field_drawing)で同じ式を重複させないよう、ここに一本化する。
+TRANSFER_AREA_ORIGIN = (
+    L1_ORIGIN[0] + TRANSFER_AREA_L1_CORNER_OFFSET,
+    L1_ORIGIN[1] + TRANSFER_AREA_L1_CORNER_OFFSET,
+)
 
 BUILD_SPOT_SIZE = (500, 500)
 BUILD_SPOTS_PER_LEVEL = 4  # 四隅に1個ずつ (赤2・青2)
@@ -129,14 +136,18 @@ CENTRAL_PILLAR_SOCKET_DEPTH = 100
 # 競技物
 # ============================================================
 EARTH_BLOCK_SIZE = 350  # 立方体一辺
-EARTH_BLOCK_WEIGHT_RANGE_G = (200, 350)
+# 公式ルールブック: "Approx. weight: 600 grams per unit (±20%)"
+EARTH_BLOCK_WEIGHT_RANGE_G = (480, 720)
 EARTH_BLOCK_COUNT_PER_TEAM = 20
 
 SKY_BLOCK_SIZE = 200
-SKY_BLOCK_WEIGHT_RANGE_G = (80, 150)
+# 公式ルールブック: "Approx. weight: 220 grams per unit (±20%)"
+SKY_BLOCK_WEIGHT_RANGE_G = (176, 264)
 
-MUSTIKA_DIAMETER = 200
-MUSTIKA_WEIGHT_RANGE_G = (400, 440)
+# 公式ルールブック: Mikasa V300W(Size 5)を使用、直径約210mm
+MUSTIKA_DIAMETER = 210
+# 公式ルールブック: "Approx. weight: 260-280 grams"
+MUSTIKA_WEIGHT_RANGE_G = (260, 280)
 
 
 # ============================================================

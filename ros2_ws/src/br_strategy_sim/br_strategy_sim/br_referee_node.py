@@ -42,11 +42,6 @@ def _point_in_rect(x: float, y: float, origin: tuple[float, float], size: tuple[
     return origin[0] <= x <= origin[0] + size[0] and origin[1] <= y <= origin[1] + size[1]
 
 
-def _transfer_area_origin() -> tuple[float, float]:
-    off = fc.TRANSFER_AREA_L1_CORNER_OFFSET
-    return (fc.L1_ORIGIN[0] + off, fc.L1_ORIGIN[1] + off)
-
-
 class BrRefereeNode(Node):
     def __init__(self):
         super().__init__('br_referee_node')
@@ -134,6 +129,7 @@ class BrRefereeNode(Node):
         for block in msg.blocks:
             self._check_block_movement(block)
             self._check_release(block)
+            self._check_grasp(block)
             self._prev_block_position[block.id] = block.position
             self._prev_block_held[block.id] = block.held_by
             self._prev_block_placed[block.id] = block.placed
@@ -152,10 +148,14 @@ class BrRefereeNode(Node):
         was_placed = self._prev_block_placed.get(block.id, False)
         robot = self._nearest_robot(block.position.x, block.position.y)
         if was_placed:
-            # 7.2: 設置済みブロックが動いた。相手の設置物を動かした場合のみ即失格
-            # (Phase1で物理的に動かせるのは自チームのロボットだけなので、
-            # 「自チームが相手の設置物を動かした」場合のみ判定できる)
-            if block.owner_team and block.owner_team != self._own_team:
+            # 7.2: 設置済みブロックが動いた。対象はアースブロックのみ(ルールブック
+            # 7.2/3.5.5とも"Earth Block"限定。スカイブロックは3.5.8で意図的に
+            # ひっくり返す/動かすことが正規の"stealing"手段として認められている
+            # ため、スカイブロックの移動は失格対象にしない)。
+            # 相手の設置物を動かした場合のみ即失格(Phase1で物理的に動かせるのは
+            # 自チームのロボットだけなので、「自チームが相手の設置物を動かした」
+            # 場合のみ判定できる)
+            if block.block_type == 'earth' and block.owner_team and block.owner_team != self._own_team:
                 self._publish_violation(
                     'disqualification', robot or 'br', self._own_team, forced_retry=False)
             return
@@ -174,10 +174,22 @@ class BrRefereeNode(Node):
             return
         if block.level != LEVEL_L1:
             return
-        origin = _transfer_area_origin()
-        if _point_in_rect(block.position.x, block.position.y, origin, fc.TRANSFER_AREA_SIZE):
+        if _point_in_rect(block.position.x, block.position.y, fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE):
             self._add_score(block.owner_team, fc.SCORE_TRANSFER_PER_BLOCK)
         else:
+            self._publish_violation('transfer', 'br', block.owner_team, forced_retry=True)
+
+    def _check_grasp(self, block) -> None:
+        """
+        6.3受渡し違反のもう一方の条件: 「BRが受渡しエリアに完全に入っていない
+        物体に触れた」場合。TRの把持(ストレージ/共用エリアでの通常の収集)は
+        対象外(ルールブック6.3はBR限定)。
+        """
+        was_held_by_br = self._prev_block_held.get(block.id, "none") == "br"
+        if was_held_by_br or block.held_by != "br":
+            return  # 「(brでない)->br」への遷移でなければ対象外
+        if not _point_in_rect(
+                block.position.x, block.position.y, fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE):
             self._publish_violation('transfer', 'br', block.owner_team, forced_retry=True)
 
     def _on_build_action(self, msg: BuildAction) -> None:
@@ -217,18 +229,32 @@ class BrRefereeNode(Node):
         self._recompute_tower_score()
 
     def _recompute_tower_score(self) -> None:
+        """
+        8.3/8.4: ブロックごとに得点を計算する(塔単位ではない)。
+        - アースブロックは設置した個人チームに固定(owner_teams[i], 8.3.1)。
+          上に他チームのブロックが積まれても変わらない。
+        - スカイブロックは常にその時点の上面色(top_colors[i], 8.3.2)で決まり、
+          ひっくり返す(FLIP_SKY_BLOCK)たびに帰属が変わる。設置したチームとは
+          無関係(3.5.7: 相手が置いた土台の上でも、自分の色を上にすれば
+          そのチームの塔になる)。
+        1つの建築スポットに赤アース+青アース+赤スカイのような混成タワー
+        (8.4)も自然に成立する。
+        """
         red = 0
         blue = 0
         for tower in self._tower_state.towers:
-            points = sum(
-                self._block_score(block_type, tower.level, layer=i + 1)
-                for i, block_type in enumerate(tower.block_types)
-            )
-            if tower.team == fc.TeamColor.RED:
-                red += points
-            elif tower.team == fc.TeamColor.BLUE:
-                blue += points
-            # team未確定("")の建築スポットは得点計上しない(要確認)
+            for i, block_type in enumerate(tower.block_types):
+                layer = i + 1
+                if block_type == 'earth':
+                    team = tower.owner_teams[i]
+                else:  # sky
+                    team = tower.top_colors[i]
+                points = self._block_score(block_type, tower.level, layer)
+                if team == fc.TeamColor.RED:
+                    red += points
+                elif team == fc.TeamColor.BLUE:
+                    blue += points
+                # team未確定("")のブロックは得点計上しない
 
         if self._mustika_on_central_pillar():
             # ムスティカ奉納点の帰属チームを判別する情報が契約上無いため、
