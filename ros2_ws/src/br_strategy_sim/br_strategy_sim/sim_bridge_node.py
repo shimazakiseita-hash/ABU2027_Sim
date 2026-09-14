@@ -28,6 +28,12 @@ held_by="none"・placed=True)、FLIP_SKY_BLOCKなら既に設置済みの最上�
 前提であり、pymunkの衝突コールバックには依存しない。TRのRobotBodyにも
 BRと同じlevel_filterを適用するが、この前提(violation判定をpymunk衝突
 ベースにしない)を崩さないこと。
+
+6.4場外の物理的な処理(アース/スカイブロックの遊技からの除外、ムスティカの
+開始位置への復帰)は、真値そのものを所有するこのノードが担う
+(_enforce_out_of_bounds参照)。違反の記録(Violation発行)自体はこれまで通り
+br_referee_nodeの責務で、/true_state/blocksから該当ブロックが消えたことを
+もって検出する(このノードから審判ノードへの逆方向のトピックは設けない)。
 """
 
 from __future__ import annotations
@@ -124,6 +130,11 @@ def _build_spot_by_id(build_spot_id: str):
     return next((s for s in fc.BUILD_SPOTS if s[0] == build_spot_id), None)
 
 
+def _in_field_bounds(position: pymunk.Vec2d) -> bool:
+    """6.4場外判定: フィールド(0〜GAME_FIELD_SIZE mm四方)の内側かどうか。"""
+    return 0.0 <= position.x <= fc.GAME_FIELD_SIZE and 0.0 <= position.y <= fc.GAME_FIELD_SIZE
+
+
 def _ignore_ever_held_block_vs_robot(arbiter: pymunk.Arbiter, space: pymunk.Space, data) -> None:
     # 一度でも保持されたブロックはTR/BRどちらとも以後物理衝突しない
     # (PhysicsBlock.set_held_by参照。解放直後の位置重複による爆発的な
@@ -211,6 +222,39 @@ class SimBridgeNode(Node):
         self._execute_pending_build_action()
         self._update_grasping()
         self._publish_true_state()
+        self._enforce_out_of_bounds()
+
+    def _enforce_out_of_bounds(self) -> None:
+        """
+        6.4 場外: フィールド外(0〜GAME_FIELD_SIZE mm四方)に出た未保持ブロックを
+        処理する。アース/スカイブロックは"permanently removed from play"に
+        従い、pymunk空間とself.blocksから完全に取り除く(以後/true_state/blocks
+        にも現れなくなる)。ムスティカは"immediately returned to the Mustika
+        Pillar"に従い、開始位置(MUSTIKA_PILLAR_ORIGIN, レベルGROUND)へ即時
+        リセットする。held中(ロボットが運搬中)のオブジェクトは対象外
+        (ロボットが自らの制御下で運んでいる間は「ノックアウトされた」状況
+        ではないため)。
+
+        _publish_true_state()の"後"に呼ぶこと: フィールド外に出た瞬間の位置を
+        一度は/true_state/*として発行してから是正する(逆順にすると、
+        br_referee_nodeがムスティカの場外位置を一度も観測できないまま
+        ムスティカ柱への復帰だけを見ることになり、6.4違反として検出できない。
+        ブロック側は消える/消えないの2値なので順序に依存しないが、
+        統一のためこちらもこの順序に合わせる)。
+        """
+        remaining = []
+        for pblock in self.blocks:
+            if pblock.held_by == 'none' and not _in_field_bounds(pblock.body.position):
+                self.space.remove(pblock.body, pblock.shape)
+            else:
+                remaining.append(pblock)
+        self.blocks = remaining
+
+        if self.mustika.held_by == 'none' and not _in_field_bounds(self.mustika.body.position):
+            self.mustika.body.position = fc.MUSTIKA_PILLAR_ORIGIN
+            self.mustika.body.velocity = (0, 0)
+            self.mustika.set_level(LEVEL_GROUND)
+            self.mustika.placed = False
 
     def _update_grasping(self) -> None:
         """

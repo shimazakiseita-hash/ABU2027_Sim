@@ -11,10 +11,20 @@ ABU Robocon 2027 Phase 1 2Dシム: 審判ノード(br_referee_node)。
 違反判定(6章・7.2)は条文通り実装したが、以下は未対応(要調整):
 - 6.2.2「非共用のL1」全体の正確な境界(共用エリアとの切り分け線)が未確定のため、
   相手側スタートゾーン・ストレージエリア・建築スポットの侵入のみ判定する
-- 6.6 妨害(共用区域): 5秒間の意図的な進路妨害の判定にはタイマー管理が必要で未実装
-- 6.4 場外・6.5 落下ブロックの扱いは未実装
+- 6.6 妨害(共用区域): 相手ロボットの物理的な存在自体をPhase1ではシミュレート
+  していない(topic_contract.md「チームは実行時に1台構成」の前提)ため未実装。
+  5秒間の意図的な進路妨害の判定にはタイマー管理も別途必要
+- 6.5 落下ブロック: heldブロックは保持中に他物体と一切衝突しない設計
+  (physics_blocks.py参照)のため、Phase1の物理モデルには「robotが意図せず
+  落とす」という事象自体が存在しない。実際の衝突動力学を持つPhase2(MuJoCo)
+  で対応すべき項目のため、Phase1では未実装のまま据え置く
 - 6.3/7.2の判定は/br_build_actionの「直近受信」を建築行為のヒントとして使う
   簡易実装で、複数ブロックを連続建築する場合の取り違えは未対応
+
+6.4場外は、sim_bridge_node側で実際にブロックを遊技から除外(または
+ムスティカを開始位置へ復帰)する物理的な処理を行う。このノードはそれを
+/true_state/blocksから該当ブロックのidが消えたことで検出し、Violationの
+記録のみを行う(_check_disappeared_blocks参照)。
 """
 
 from __future__ import annotations
@@ -58,6 +68,8 @@ class BrRefereeNode(Node):
         self._prev_block_position: dict[str, Point] = {}
         self._prev_block_held: dict[str, str] = {}
         self._prev_block_placed: dict[str, bool] = {}
+        self._prev_block_owner_team: dict[str, str] = {}
+        self._known_block_ids: set[str] = set()
         # 直近に受信した/br_build_actionを「保留中の建築行為」として覚えておき、
         # 次のブロック解放が建築設置か受渡しかの区別に使う(1回消費でクリア)
         self._pending_build_action: BuildAction | None = None
@@ -126,13 +138,42 @@ class BrRefereeNode(Node):
     # --- ブロックの状態遷移: 6.1押出し / 7.2設置済み移動(失格) / 6.3受渡し ---
 
     def _on_blocks(self, msg: BlockArray) -> None:
+        current_ids = set()
         for block in msg.blocks:
+            current_ids.add(block.id)
             self._check_block_movement(block)
             self._check_release(block)
             self._check_grasp(block)
             self._prev_block_position[block.id] = block.position
             self._prev_block_held[block.id] = block.held_by
             self._prev_block_placed[block.id] = block.placed
+            self._prev_block_owner_team[block.id] = block.owner_team
+        self._check_disappeared_blocks(current_ids)
+        self._known_block_ids = current_ids
+
+    def _check_disappeared_blocks(self, current_ids: set[str]) -> None:
+        """
+        6.4場外: sim_bridge_nodeはフィールド外に出た未保持ブロックを
+        "permanently removed from play"として物理的に取り除く
+        (sim_bridge_node._enforce_out_of_bounds参照)ため、このノードからは
+        /true_state/blocksから該当idが突然消えたように見える。直前まで存在
+        していたidが消えたら、その最後の既知位置に最も近かったロボットを
+        違反対象として記録する(設置済み=placedのブロックが消えることは
+        現状の実装では起きない想定だが、念のため対象外にする)。
+        """
+        for block_id in self._known_block_ids - current_ids:
+            if self._prev_block_placed.get(block_id, False):
+                continue
+            prev = self._prev_block_position.get(block_id)
+            if prev is None:
+                continue
+            robot = self._nearest_robot(prev.x, prev.y)
+            owner_team = self._prev_block_owner_team.get(block_id, '')
+            self._publish_violation('out_of_bounds', robot or 'br', owner_team, forced_retry=True)
+            self._prev_block_position.pop(block_id, None)
+            self._prev_block_held.pop(block_id, None)
+            self._prev_block_placed.pop(block_id, None)
+            self._prev_block_owner_team.pop(block_id, None)
 
     def _check_block_movement(self, block) -> None:
         """held中(正当な運搬)以外でブロックが動いた場合の判定(6.1押出し禁止 / 7.2失格)。"""
@@ -221,8 +262,35 @@ class BrRefereeNode(Node):
     # --- 得点計算 (8章) ---
 
     def _on_mustika_pose(self, msg: MustikaPose) -> None:
+        self._check_mustika_out_of_bounds_reset(msg)
         self._mustika_pose = msg
         self._recompute_tower_score()
+
+    def _check_mustika_out_of_bounds_reset(self, msg: MustikaPose) -> None:
+        """
+        6.4場外(ムスティカ): sim_bridge_nodeはフィールド外に出た未保持の
+        ムスティカを検出した次のtickでムスティカ柱(MUSTIKA_PILLAR_ORIGIN)へ
+        リセットする(_publish_true_stateの後に_enforce_out_of_boundsを呼ぶ
+        順序のため、場外に出た瞬間の位置が一度は/true_state/mustika_poseとして
+        発行されてから是正される。sim_bridge_node._enforce_out_of_bounds参照)。
+        このノードからは「大きく位置が動き、直後にムスティカ柱ぴったりの
+        位置になっている」という遷移としてしか観測できない(ブロックの
+        _check_disappeared_blocksと同じ考え方)。
+        """
+        prev = self._mustika_pose
+        if prev is None or msg.held_by != 'none' or prev.held_by != 'none':
+            return
+        at_pillar_now = math.hypot(
+            msg.position.x - fc.MUSTIKA_PILLAR_ORIGIN[0], msg.position.y - fc.MUSTIKA_PILLAR_ORIGIN[1]) < 1.0
+        was_at_pillar = math.hypot(
+            prev.position.x - fc.MUSTIKA_PILLAR_ORIGIN[0], prev.position.y - fc.MUSTIKA_PILLAR_ORIGIN[1]) < 1.0
+        if not at_pillar_now or was_at_pillar:
+            return
+        displacement = math.hypot(msg.position.x - prev.position.x, msg.position.y - prev.position.y)
+        if displacement <= PUSH_DISPLACEMENT_THRESHOLD_MM:
+            return
+        robot = self._nearest_robot(prev.position.x, prev.position.y)
+        self._publish_violation('out_of_bounds', robot or 'br', self._own_team, forced_retry=True)
 
     def _on_tower_state(self, msg: TowerArray) -> None:
         self._tower_state = msg

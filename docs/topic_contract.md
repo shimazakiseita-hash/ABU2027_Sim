@@ -107,15 +107,27 @@ ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
      （＝BRが把持した瞬間のブロック位置がエリア外）
   4.4.3補足：受渡しはエリア境界内で完全に行う必要があり、エリア境界内にいる限り
   TR-BR間の物理接触は許容される
-- 6.6 妨害（共用区域）：未実装（5秒間の意図的な進路妨害の判定にはタイマー管理が
-  必要で、Phase1では未対応。要調整）
+- 6.4 場外：ロボットがアース/スカイブロックをフィールド外(0〜GAME_FIELD_SIZE
+  mm四方の外)へ弾き出した場合 → sim_bridge_node側でそのブロックを
+  "permanently removed from play"としてpymunk空間・`self.blocks`から完全に
+  除去する（`sim_bridge_node._enforce_out_of_bounds`）。ムスティカの場合は
+  ムスティカ柱(`MUSTIKA_PILLAR_ORIGIN`)へ即時リセットする。br_referee_node
+  はこの除去を`/true_state/blocks`から該当idが消えたことで検出し、
+  `violation`(type="out_of_bounds", forced_retry=true)を記録する
+  （held中=ロボットが自らの制御下で運んでいる間は対象外）
+- 6.5 落下：未実装。heldブロックは保持中に他物体と一切衝突しない設計
+  （physics_blocks.py参照。解放時の分離爆発を避けるための恒久措置）のため、
+  Phase1の物理モデルには「ロボットが意図せず落とす」という事象自体が
+  存在しない。実際の衝突動力学を持つPhase2(MuJoCo)で対応すべき項目
+- 6.6 妨害（共用区域）：未実装。相手ロボットの物理的な存在自体をPhase1では
+  シミュレートしていない（本文書冒頭の「チームは実行時に1台構成」参照）ため、
+  そもそも「相手の作業を妨害する」という状況が発生しない。加えて5秒間の
+  意図的な進路妨害の判定にはタイマー管理も別途必要（要調整）
 - 7.2 設置済みアースブロックの移動（失格）：相手が正しく設置した**アース
   ブロック**を意図的に除去・移動・妨害する行為 → `violation`(type="disqualification",
   forced_retryは意味を持たないため常にfalse。強制リトライではなく即座に失格＝敗戦扱い)。
   スカイブロックは対象外（3.5.8で「ひっくり返す/位置を変える」ことが正規の
   "stealing"手段として認められているため、動かしても失格にはならない）
-- 6.4 場外・6.5 落下：未実装（ブロックがフィールド外に出た場合の永久除外、
-  落下ブロックの扱いはPhase1では判定していない。要調整）
 - 得点計算（8章、SCORE_*定数）：塔単位ではなくブロック単位で計算する
   - 受渡し点：TRが受渡しエリアへ届けたブロック1個につき5点（8.1）
   - アースブロック：設置した個人チームに得点が固定される（8.3.1）。上に他
@@ -184,6 +196,7 @@ string target_build_spot_id
 
 # Violation.msg
 string type           # "zone" | "push" | "transfer" | "disqualification"(7.2、追加)
+                      # | "out_of_bounds"(6.4、追加)
 string robot          # "tr" | "br"
 string team           # "red" | "blue"
 bool forced_retry      # type=="disqualification"の場合は意味を持たず常にfalse
