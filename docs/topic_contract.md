@@ -29,7 +29,7 @@ br_decision パッケージからは購読しない規約とする。
 | `/true_state/tr_pose` | `geometry_msgs/Pose2D` + level(int) | TRの正確な位置・階層 |
 | `/true_state/br_pose` | `geometry_msgs/Pose2D` + level(int) | BRの正確な位置・階層 |
 | `/true_state/blocks` | カスタム msg `BlockArray` | 全ブロックの位置・色・所有チーム・状態 |
-| `/true_state/mustika_pose` | `geometry_msgs/Point` + level(int) | ムスティカの正確な位置 |
+| `/true_state/mustika_pose` | カスタム msg `MustikaPose` | ムスティカの正確な位置・held_by |
 | `/true_state/tower_state` | カスタム msg `TowerArray` | 各建築スポットの構成状況（得点計算の元データ） |
 
 ## 2. 観測トピック（認識・自己位置推定ノードが発行。意思決定ノードはこちらを購読）
@@ -39,7 +39,8 @@ br_decision パッケージからは購読しない規約とする。
 | `/br_pose_estimated` | `geometry_msgs/PoseWithCovarianceStamped` | 自己位置推定結果 | Phase 1は誤差なしでも可（起動フラグで切替） |
 | `/tr_pose_estimated` | 同上 | TRの自己位置推定 | 同上 |
 | `/detected_blocks` | カスタム msg `DetectedBlockArray` | カメラ視野内で認識したブロック（位置・推定色） | 視野外は含まれない |
-| `/detected_mustika` | `geometry_msgs/PointStamped` | 検出したムスティカ位置（視野内のみ） | - |
+| `/detected_mustika` | カスタム msg `DetectedMustika` | 検出したムスティカ位置・held_by（視野内のみ） | 視野外は発行しない |
+| `/detected_towers` | カスタム msg `TowerArray` | 完成塔の一覧（秘蹟の要件=Sanctuary Mandate判定用） | 視野判定なし（塔は静的な大型構造物のため。要調整） |
 
 起動時オプション：
 
@@ -123,11 +124,16 @@ ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
     （8.3.2）。ひっくり返す(`FLIP_SKY_BLOCK`)たびに得点の帰属が変わる
   - 1つの建築スポットに赤アース+青アース+赤スカイのような**混成タワー**も
     正規（8.4の実例通り）
-  - ムスティカ奉納点：250点（8.5）
+  - ムスティカ奉納点：250点（8.5）。br_referee_node._mustika_on_central_pillar()が
+    中央支柱(FIELD_CENTER, レベルL2)への設置を検出して加算する
   - 秘蹟の要件（Sanctuary Mandate, 3.6/4.5.1）：共有エリアの塔を1つ以上含む
-    完成塔2つを満たすまでTRはムスティカを回収できない。Phase1はムスティカの
-    意思決定ロジック自体が未実装のため、この前提条件はまだ判定・強制していない
-    （要対応）
+    完成塔2つを満たすまでTRはムスティカを回収できない。
+    `decision_common.sanctuary_mandate_satisfied()`で判定し、TR側の意思決定
+    ステートマシン（WAIT_SANCTUARY_MANDATE状態）が`/detected_towers`を見て
+    判定・強制する。共有エリア＝L2（ルールブック上「全体が共用エリア」）を
+    含む塔があるかで判定する簡易実装（L1内の一部共有エリアは
+    field_constants.BUILD_SPOTSの割り当てにまだ反映していないため対象外。
+    要調整）
 
 ### 受渡し違反と建築設置の区別
 
@@ -187,9 +193,11 @@ bool forced_retry      # type=="disqualification"の場合は意味を持たず�
 geometry_msgs/Pose2D pose
 int32 level          # 0=ground, 1=L1, 2=L2
 
-# MustikaPose.msg (/true_state/mustika_pose用。br_referee_node実装時に追加)
+# MustikaPose.msg (/true_state/mustika_pose用。br_referee_node実装時に追加。
+# held_byはムスティカ回収・受渡し・設置の意思決定ロジック実装時に追加)
 geometry_msgs/Point position
 int32 level
+string held_by  # "none" | "tr" | "br"
 
 # TowerState.msg (建築スポット1個分の積み上げ状態。br_referee_node実装時に追加、
 # ルールブック8.3/8.4対応のため塔単位のteamからブロック単位のowner_teamsに変更)
@@ -216,6 +224,12 @@ string held_by         # "none" | "tr" | "br" (Block.msgと同様。br_decision�
 
 # DetectedBlockArray.msg (/detected_blocks用。br_observation_node実装時に追加)
 DetectedBlock[] blocks
+
+# DetectedMustika.msg (/detected_mustika用。当初はgeometry_msgs/PointStampedの
+# ままだったが、ムスティカ回収の意思決定ロジック実装時にheld_byが必要になり
+# 専用msgへ変更)
+geometry_msgs/Point position
+string held_by  # "none" | "tr" | "br"
 ```
 
 ## Phase 1 → Phase 2 → 実機での差し替え箇所

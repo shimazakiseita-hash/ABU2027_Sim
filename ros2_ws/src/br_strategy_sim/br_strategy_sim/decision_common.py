@@ -48,6 +48,15 @@ def point_in_rect(x: float, y: float, origin: tuple[float, float], size: tuple[f
 # 待ち合わせ地点を与えて正面衝突を避ける。
 _TRANSFER_TARGET_OFFSET_MM = 350.0
 
+# tr_transfer_release_point/br_transfer_wait_pointへの接近には、デフォルトの
+# ARRIVAL_THRESHOLD_MM(150mm)ではなくこちらを使うこと。エリア境界までの余裕
+# (500 - _TRANSFER_TARGET_OFFSET_MM = 150mm)とARRIVAL_THRESHOLD_MMがちょうど
+# 同値だと、到着判定が成立する瞬間の位置によってはブロック/ムスティカの解放
+# 位置が境界ギリギリ外側になり得て、受け手側のpoint_in_rect判定が恒久的に
+# 満たされず無限待機してしまう(複数塔+ムスティカの統合テストで、6回中1回の
+# 頻度で発覚)。余裕を十分に残すため、この接近だけはより小さい閾値を使う。
+TRANSFER_POINT_ARRIVAL_THRESHOLD_MM = 80.0
+
 
 def tr_transfer_release_point() -> tuple[float, float]:
     origin, size = transfer_area_rect()
@@ -59,6 +68,21 @@ def br_transfer_wait_point() -> tuple[float, float]:
     origin, size = transfer_area_rect()
     center = (origin[0] + size[0] / 2, origin[1] + size[1] / 2)
     return (center[0] + _TRANSFER_TARGET_OFFSET_MM, center[1] + _TRANSFER_TARGET_OFFSET_MM)
+
+
+def sanctuary_mandate_satisfied(towers, required_layers: int) -> bool:
+    """3.6/4.5.1(秘蹟の要件, Sanctuary Mandate): 完成塔(積み上げ段数が
+    required_layers以上)が2つ以上、かつそのうち少なくとも1つが共有エリアの
+    建築スポットにあること。これを満たすまでTRはムスティカを回収できない。
+    L2はルールブック上「全体が共用エリア」なので、level==2の完成塔があれば
+    共有エリア条件を満たす(L1にも一部共有エリアがあり得るが、
+    field_constants.BUILD_SPOTSは現状L1の4隅を赤/青専有として割り当てて
+    いるため、この簡易判定ではL2のみを共有扱いとする)。towersは
+    TowerState(build_spot_id, level, block_types, ...)相当のリスト。"""
+    complete = [t for t in towers if len(t.block_types) >= required_layers]
+    if len(complete) < 2:
+        return False
+    return any(t.level == 2 for t in complete)
 
 
 def drive_toward(
