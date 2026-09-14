@@ -91,7 +91,9 @@ def _block_half_size_mm(block_type: str) -> float:
     raise ValueError(f"unknown block_type: {block_type}")
 
 
-def _grasp_range_mm(block_type: str) -> float:
+def grasp_range_mm(block_type: str) -> float:
+    """複数の候補から把持対象を選ぶ側(sim_bridge_node._try_grasp)からも
+    参照するため公開関数にしてある。"""
     return _ROBOT_HALF_WIDTH_MM + GRASP_MARGIN_MM + _block_half_size_mm(block_type)
 
 
@@ -204,7 +206,7 @@ class PhysicsBlock:
         if self.held_by not in ("none", holder_id):
             return  # 他方のロボットが保持中なので奪えない
         distance = (self.body.position - gripper_point).length
-        if distance <= _grasp_range_mm(self.block_type):
+        if distance <= grasp_range_mm(self.block_type):
             self.set_held_by(holder_id)
 
 

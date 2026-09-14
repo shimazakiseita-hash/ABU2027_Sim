@@ -45,6 +45,7 @@ from .physics_blocks import (
     LEVEL_GROUND,
     ROBOT_COLLISION_TYPE,
     PhysicsBlock,
+    grasp_range_mm,
     make_earth_block,
     make_mustika,
     make_sky_block,
@@ -159,6 +160,9 @@ class SimBridgeNode(Node):
         # グリッパー開閉状態(初期値は「開いている」=何も掴もうとしていない)
         self._br_gripper_open = True
         self._tr_gripper_open = True
+        # 閉じる際に狙う対象ブロックid(空文字ならレンジ内最近傍にフォールバック)
+        self._br_gripper_target_id = ''
+        self._tr_gripper_target_id = ''
 
         # /br_build_actionの処理待ちキューと、建築スポットごとの積み上げ状態
         # (build_spot_id -> {"level": int, "team": str, "blocks": [(block_type, top_color), ...]})
@@ -187,9 +191,11 @@ class SimBridgeNode(Node):
 
     def _on_br_gripper_cmd(self, msg: GripperCmd) -> None:
         self._br_gripper_open = msg.open
+        self._br_gripper_target_id = msg.target_block_id
 
     def _on_tr_gripper_cmd(self, msg: GripperCmd) -> None:
         self._tr_gripper_open = msg.open
+        self._tr_gripper_target_id = msg.target_block_id
 
     def _on_build_action(self, msg: BuildAction) -> None:
         self._pending_build_action = msg
@@ -207,29 +213,63 @@ class SimBridgeNode(Node):
 
     def _update_grasping(self) -> None:
         """
-        TR/BRそれぞれ同時に1個しか保持できないようにする。update_holding自体は
-        ブロック単位でしか判定できず「このロボットは既に別のブロックを保持中か」
-        を知らないため、ここ(全ブロックを見渡せる場所)でロボットが既に何か
-        保持しているかを事前に調べ、保持中はそのブロック以外へのupdate_holding
-        呼び出しをスキップする(統合テストで、受渡し直後にたまたま近くにあった
-        配達済みブロックを再度掴んでしまい2個同時保持になる不具合が発覚)。
+        TR/BRそれぞれ同時に1個しか保持できないようにする。グリッパーが
+        閉じている場合、GripperCmd.target_block_idで指定された特定の1個
+        だけを対象に把持判定する(_try_grasp参照)。
+
+        以前は「距離だけで最も近い1個」を推測で選んでいたが、これだと
+        以下のような取り違えが起こり得た:
+        - グラウンド共用エリアのスカイブロック格子(240mmピッチ)は把持レンジ
+          (600mm)より隣接間隔が狭く、意思決定ノードが実際に狙っている
+          ブロックの隣にある別のブロックの方が僅かに近いだけで誤って
+          選ばれてしまう
+        - ブロック種別ごとに把持レンジが異なるため、距離だけでnearestを
+          決めると、意思決定ノードが実際に接近している対象(その種別の
+          レンジ内)より、レンジ外の別種別のブロックの方が近いというだけで
+          選ばれてしまう
+        - 共用エリア内の衝突で弾かれて偶然ブロック搬送経路の近くまで転がって
+          きたムスティカを、搬送中のグリッパー閉状態のロボットが意図せず
+          掴んでしまう
+        いずれも複数塔の統合テストで発覚した。意思決定ノード自身が
+        /detected_blocksで対象のidを既に把握しているため、そのidを
+        GripperCmdに乗せて物理層に直接伝える方が、距離ベースの推測より
+        堅牢(target_block_idが空文字の場合のみ、後方互換としてレンジ内
+        最近傍へのフォールバックを行う)。
         """
         all_blocks = [*self.blocks, self.mustika]
-        br_holds = next((b for b in all_blocks if b.held_by == 'br'), None)
-        tr_holds = next((b for b in all_blocks if b.held_by == 'tr'), None)
+        self._try_grasp(all_blocks, self.br.position, self._br_gripper_open, 'br', self._br_gripper_target_id)
+        self._try_grasp(all_blocks, self.tr.position, self._tr_gripper_open, 'tr', self._tr_gripper_target_id)
+
         for pblock in all_blocks:
-            if br_holds is None or pblock is br_holds:
-                pblock.update_holding(self.br.position, self._br_gripper_open, 'br')
-                if pblock.held_by == 'br':
-                    br_holds = pblock  # 同一tick内で他のブロックまで掴まないよう即座に反映
-            if tr_holds is None or pblock is tr_holds:
-                pblock.update_holding(self.tr.position, self._tr_gripper_open, 'tr')
-                if pblock.held_by == 'tr':
-                    tr_holds = pblock
             if pblock.held_by == 'br':
                 pblock.follow_gripper(self.br.position)
             elif pblock.held_by == 'tr':
                 pblock.follow_gripper(self.tr.position)
+
+    @staticmethod
+    def _try_grasp(all_blocks, gripper_point, gripper_open: bool, holder_id: str, target_block_id: str) -> None:
+        holding = next((b for b in all_blocks if b.held_by == holder_id), None)
+        if gripper_open:
+            if holding is not None:
+                holding.update_holding(gripper_point, True, holder_id)
+            return
+        if holding is not None:
+            return  # 既に何か保持中なら新たに掴みにいかない
+        candidates = [b for b in all_blocks if b.held_by == 'none']
+        if not candidates:
+            return
+        if target_block_id:
+            target = next((b for b in candidates if b.id == target_block_id), None)
+            if target is not None:
+                target.update_holding(gripper_point, False, holder_id)
+            return
+        # target_block_id未指定時のみ、後方互換としてレンジ内最近傍にフォールバックする。
+        candidates.sort(key=lambda b: (b.body.position - gripper_point).length)
+        for candidate in candidates:
+            distance = (candidate.body.position - gripper_point).length
+            if distance <= grasp_range_mm(candidate.block_type):
+                candidate.update_holding(gripper_point, False, holder_id)
+                return
 
     def _execute_pending_build_action(self) -> None:
         """

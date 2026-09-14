@@ -168,6 +168,8 @@ string current_action
 # GripperCmd.msg
 bool open
 float32 target_force
+string target_block_id  # open=falseで閉じる際に狙う対象(/detected_blocksのid)。
+                         # 空文字なら把持レンジ内最近傍にフォールバックする
 
 # BuildAction.msg
 string action_type   # "PLACE_EARTH_BLOCK" | "PLACE_SKY_BLOCK" | "PLACE_MUSTIKA"

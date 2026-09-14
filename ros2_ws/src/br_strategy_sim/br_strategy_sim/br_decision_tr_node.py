@@ -11,15 +11,15 @@ ABU Robocon 2027 Phase 1 2Dシム: TR側の意思決定ノード(br_decision_tr_
 受渡しは「受渡しエリアに置く/受渡しエリアで拾う」という物理的な状態
 (held_by, 位置)だけで成立させる(HANDOFFの方針通りの最小実装)。
 
-1つの建築スポットに完成塔(アース2段+スカイ1段)を作るところまでを対象に
-する。TRはBRの状態を直接知らない(通信プロトコルを持たない設計)ため、
-自分の配送回数(_delivery_index)だけを頼りに「今何個目を届けているか」を
-数え、DELIVERY_SEQUENCEの順序で配送する種別を切り替える。BR側
-(br_decision_br_node.BUILD_SEQUENCE)と同じ順序を独立に前提として動く。
-両者が受渡しエリアを介して1対1で同期する(次を取りに行くのは前回分を
-BRが受け取った後)前提のため、この前提が崩れる状況には対応していない。
-状態名はEARTH限定の最初のゴール時のまま(GRASP_EARTH_BLOCK等)だが、
-実際に対象とする種別はDELIVERY_SEQUENCEに従う。
+複数の建築スポットに完成塔(アース2段+スカイ1段)を作るのに必要な分だけ
+ブロックを届け続ける。TRはBRの状態を直接知らない(通信プロトコルを持たない
+設計)ため、自分の配送回数(_delivery_index)だけを頼りに「今何個目を
+届けているか」を数え、DELIVERY_SEQUENCEの順序で配送する種別を切り替える。
+BR側(br_decision_br_node.BUILD_SEQUENCE, BUILD_SPOT_PLAN)と同じ順序・
+同じ塔数を独立に前提として動く。両者が受渡しエリアを介して1対1で同期する
+(次を取りに行くのは前回分をBRが受け取った後)前提のため、この前提が崩れる
+状況には対応していない。状態名はEARTH限定の最初のゴール時のまま
+(GRASP_EARTH_BLOCK等)だが、実際に対象とする種別はDELIVERY_SEQUENCEに従う。
 """
 
 from __future__ import annotations
@@ -50,9 +50,11 @@ _SHARED_AREA_CENTER = (
 )
 _SOURCE_AREA_CENTER_BY_TYPE = {'earth': _STORAGE_AREA_CENTER, 'sky': _SHARED_AREA_CENTER}
 
-# 塔の構成順(アース2段->スカイ1段)。br_decision_br_node.BUILD_SEQUENCEと
-# 対応させること(要素数・種別の順序を一致させる)。
-DELIVERY_SEQUENCE = ('earth', 'earth', 'sky')
+# 塔の構成順(アース2段->スカイ1段)を、建てる塔の数だけ繰り返す。
+# br_decision_br_node.BUILD_SEQUENCE * len(BUILD_SPOT_PLAN)と対応させること
+# (要素数・種別の順序を一致させる)。
+NUM_TOWERS = 2
+DELIVERY_SEQUENCE = ('earth', 'earth', 'sky') * NUM_TOWERS
 
 # このノードは(BUILD_SPOT_IDと同様に)赤チーム固定の暫定実装。スカイブロックは
 # 得点(8.3.2)がowner_teamではなく現在の上面色で決まるため、自チームの色が
@@ -171,7 +173,8 @@ class BrDecisionTrNode(Node):
                 self.pub_cmd_vel.publish(twist)
             else:
                 self.pub_cmd_vel.publish(Twist())
-            self.pub_gripper.publish(GripperCmd(open=False, target_force=1.0))
+            self.pub_gripper.publish(GripperCmd(
+                open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
             if target is not None and target.held_by == 'tr':
                 self._state = TrState.APPROACH_TRANSFER_AREA
             elif self._timeout_counter > GRASP_TIMEOUT_TICKS:
@@ -179,7 +182,8 @@ class BrDecisionTrNode(Node):
                 self._state = TrState.APPROACH_STORAGE
 
         elif self._state == TrState.APPROACH_TRANSFER_AREA:
-            self.pub_gripper.publish(GripperCmd(open=False, target_force=1.0))
+            self.pub_gripper.publish(GripperCmd(
+                open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
             twist, arrived = drive_toward(self._current_uv(), tr_transfer_release_point())
             self.pub_cmd_vel.publish(twist)
             if arrived:
