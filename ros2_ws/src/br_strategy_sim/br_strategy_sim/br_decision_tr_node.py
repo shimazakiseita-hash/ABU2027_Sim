@@ -4,12 +4,15 @@ ABU Robocon 2027 Phase 1 2Dシム: TR側の意思決定ノード(br_decision_tr_
 最小限のステートマシン:
     IDLE -> APPROACH_STORAGE -> GRASP_EARTH_BLOCK
          -> APPROACH_TRANSFER_AREA -> RELEASE_IN_TRANSFER -> (ループ)
+         -> WAIT_SANCTUARY_MANDATE -> APPROACH_MUSTIKA -> GRASP_MUSTIKA
+         -> APPROACH_TRANSFER_AREA -> RELEASE_IN_TRANSFER -> DONE
 
-/tr_pose_estimated, /detected_blocks(観測トピック)だけを見て動く。
-/true_state/*は購読しない(topic_contract.mdの規約)。BR側(br_decision_br_node)
-とは完全に独立したノード/ステートマシンで、通信プロトコルは持たない。
-受渡しは「受渡しエリアに置く/受渡しエリアで拾う」という物理的な状態
-(held_by, 位置)だけで成立させる(HANDOFFの方針通りの最小実装)。
+/tr_pose_estimated, /detected_blocks, /detected_mustika, /detected_towers
+(いずれも観測トピック)だけを見て動く。/true_state/*は購読しない
+(topic_contract.mdの規約)。BR側(br_decision_br_node)とは完全に独立した
+ノード/ステートマシンで、通信プロトコルは持たない。受渡しは「受渡しエリアに
+置く/受渡しエリアで拾う」という物理的な状態(held_by, 位置)だけで成立させる
+(HANDOFFの方針通りの最小実装)。
 
 複数の建築スポットに完成塔(アース2段+スカイ1段)を作るのに必要な分だけ
 ブロックを届け続ける。TRはBRの状態を直接知らない(通信プロトコルを持たない
@@ -20,6 +23,11 @@ BR側(br_decision_br_node.BUILD_SEQUENCE, BUILD_SPOT_PLAN)と同じ順序・
 (次を取りに行くのは前回分をBRが受け取った後)前提のため、この前提が崩れる
 状況には対応していない。状態名はEARTH限定の最初のゴール時のまま
 (GRASP_EARTH_BLOCK等)だが、実際に対象とする種別はDELIVERY_SEQUENCEに従う。
+
+全ブロックを届け終えたら、秘蹟の要件(Sanctuary Mandate, 3.6/4.5.1)が
+満たされるまで待ち(/detected_towersで完成塔を確認する。BUILD_SPOT_PLANに
+共有エリア=L2の塔を含めてあるので、両塔完成時点で自然に満たされる設計)、
+満たされたらムスティカを取りに行き、同じ受渡しエリア経由でBRに渡す。
 """
 
 from __future__ import annotations
@@ -31,14 +39,26 @@ import rclpy
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from rclpy.node import Node
 
-from br_msgs.msg import DetectedBlockArray, GripperCmd
+from br_msgs.msg import DetectedBlockArray, DetectedMustika, GripperCmd, TowerArray
 
 from . import field_constants as fc
-from .decision_common import block_arrival_threshold_mm, drive_toward, tr_transfer_release_point
+from .decision_common import (
+    TRANSFER_POINT_ARRIVAL_THRESHOLD_MM,
+    block_arrival_threshold_mm,
+    drive_toward,
+    sanctuary_mandate_satisfied,
+    tr_transfer_release_point,
+)
 
 _EARTH_BLOCK_ARRIVAL_THRESHOLD_MM = block_arrival_threshold_mm(fc.EARTH_BLOCK_SIZE / 2)
 _SKY_BLOCK_ARRIVAL_THRESHOLD_MM = block_arrival_threshold_mm(fc.SKY_BLOCK_SIZE / 2)
+_MUSTIKA_ARRIVAL_THRESHOLD_MM = block_arrival_threshold_mm(fc.MUSTIKA_DIAMETER / 2)
 _ARRIVAL_THRESHOLD_BY_TYPE = {'earth': _EARTH_BLOCK_ARRIVAL_THRESHOLD_MM, 'sky': _SKY_BLOCK_ARRIVAL_THRESHOLD_MM}
+
+# BUILD_SEQUENCE(br_decision_br_node)の段数と一致させること
+# (秘蹟の要件の「完成塔」判定=/detected_towersのblock_typesが何個揃えば
+# 完成とみなすか、に使う)。
+TOWER_REQUIRED_LAYERS = 3
 
 _STORAGE_AREA_CENTER = (
     fc.STORAGE_AREA_ORIGIN[0] + fc.STORAGE_AREA_SIZE[0] / 2,
@@ -73,6 +93,9 @@ class TrState(Enum):
     GRASP_EARTH_BLOCK = auto()
     APPROACH_TRANSFER_AREA = auto()
     RELEASE_IN_TRANSFER = auto()
+    WAIT_SANCTUARY_MANDATE = auto()
+    APPROACH_MUSTIKA = auto()
+    GRASP_MUSTIKA = auto()
     DONE = auto()
 
 
@@ -82,16 +105,21 @@ class BrDecisionTrNode(Node):
 
         self._pose: PoseWithCovarianceStamped | None = None
         self._blocks = DetectedBlockArray()
+        self._mustika: DetectedMustika | None = None
+        self._towers = TowerArray()
         self._state = TrState.IDLE
         self._target_block_id: str | None = None
         self._timeout_counter = 0
         self._delivery_index = 0
+        self._delivering_mustika = False
 
         self.pub_cmd_vel = self.create_publisher(Twist, '/tr_cmd_vel', 10)
         self.pub_gripper = self.create_publisher(GripperCmd, '/tr_gripper_cmd', 10)
 
         self.create_subscription(PoseWithCovarianceStamped, '/tr_pose_estimated', self._on_pose, 10)
         self.create_subscription(DetectedBlockArray, '/detected_blocks', self._on_blocks, 10)
+        self.create_subscription(DetectedMustika, '/detected_mustika', self._on_mustika, 10)
+        self.create_subscription(TowerArray, '/detected_towers', self._on_towers, 10)
 
         self.create_timer(1.0 / CONTROL_HZ, self._tick)
 
@@ -100,6 +128,12 @@ class BrDecisionTrNode(Node):
 
     def _on_blocks(self, msg: DetectedBlockArray) -> None:
         self._blocks = msg
+
+    def _on_mustika(self, msg: DetectedMustika) -> None:
+        self._mustika = msg
+
+    def _on_towers(self, msg: TowerArray) -> None:
+        self._towers = msg
 
     def _current_uv(self) -> tuple[float, float]:
         p = self._pose.pose.pose.position
@@ -184,7 +218,10 @@ class BrDecisionTrNode(Node):
         elif self._state == TrState.APPROACH_TRANSFER_AREA:
             self.pub_gripper.publish(GripperCmd(
                 open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
-            twist, arrived = drive_toward(self._current_uv(), tr_transfer_release_point())
+            twist, arrived = drive_toward(
+                self._current_uv(), tr_transfer_release_point(),
+                arrival_threshold_mm=TRANSFER_POINT_ARRIVAL_THRESHOLD_MM,
+            )
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = TrState.RELEASE_IN_TRANSFER
@@ -196,15 +233,60 @@ class BrDecisionTrNode(Node):
             self._timeout_counter += 1
             if self._timeout_counter > RELEASE_SETTLE_TICKS:
                 self._target_block_id = None
-                self._delivery_index += 1
-                if self._delivery_index >= len(DELIVERY_SEQUENCE):
+                if self._delivering_mustika:
                     self._state = TrState.DONE
                 else:
-                    self._state = TrState.APPROACH_STORAGE
+                    self._delivery_index += 1
+                    if self._delivery_index >= len(DELIVERY_SEQUENCE):
+                        self._state = TrState.WAIT_SANCTUARY_MANDATE
+                    else:
+                        self._state = TrState.APPROACH_STORAGE
+
+        elif self._state == TrState.WAIT_SANCTUARY_MANDATE:
+            # 3.6/4.5.1: 完成塔2つ(うち1つは共有エリア)が揃うまでムスティカは
+            # 回収できない。/detected_towersで完成塔を確認できるまでここで待つ
+            self.pub_cmd_vel.publish(Twist())
+            self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
+            if sanctuary_mandate_satisfied(self._towers.towers, TOWER_REQUIRED_LAYERS):
+                self._state = TrState.APPROACH_MUSTIKA
+
+        elif self._state == TrState.APPROACH_MUSTIKA:
+            if self._mustika is None or self._mustika.held_by != 'none':
+                # まだ視野(2000mm圏)に入っていない場合は、開始位置(中央支柱脇の
+                # ムスティカ柱)付近へ大まかに寄る(何もせず待つと視野に入らず
+                # 永久に停止してしまう。GRASP_EARTH_BLOCK系と同じ考え方)
+                twist, _arrived = drive_toward(self._current_uv(), fc.MUSTIKA_PILLAR_ORIGIN)
+                self.pub_cmd_vel.publish(twist)
+                return
+            twist, arrived = drive_toward(
+                self._current_uv(), (self._mustika.position.x, self._mustika.position.y),
+                arrival_threshold_mm=_MUSTIKA_ARRIVAL_THRESHOLD_MM,
+            )
+            self.pub_cmd_vel.publish(twist)
+            if arrived:
+                self._state = TrState.GRASP_MUSTIKA
+                self._timeout_counter = 0
+
+        elif self._state == TrState.GRASP_MUSTIKA:
+            self._timeout_counter += 1
+            if self._mustika is not None:
+                twist, _arrived = drive_toward(
+                    self._current_uv(), (self._mustika.position.x, self._mustika.position.y),
+                    arrival_threshold_mm=_MUSTIKA_ARRIVAL_THRESHOLD_MM,
+                )
+                self.pub_cmd_vel.publish(twist)
+            else:
+                self.pub_cmd_vel.publish(Twist())
+            self.pub_gripper.publish(GripperCmd(open=False, target_force=1.0, target_block_id='mustika'))
+            if self._mustika is not None and self._mustika.held_by == 'tr':
+                self._delivering_mustika = True
+                self._target_block_id = 'mustika'
+                self._state = TrState.APPROACH_TRANSFER_AREA
+            elif self._timeout_counter > GRASP_TIMEOUT_TICKS:
+                self._state = TrState.APPROACH_MUSTIKA
 
         elif self._state == TrState.DONE:
-            # 塔に必要な分(DELIVERY_SEQUENCE)を届け終えた。今回のゴールは
-            # 単一の塔の完成までなので、以降は何もせず停止する。
+            # 全ブロック+ムスティカを届け終えた。以降は何もせず停止する。
             self.pub_cmd_vel.publish(Twist())
 
 

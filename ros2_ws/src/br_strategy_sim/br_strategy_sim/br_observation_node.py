@@ -2,9 +2,15 @@
 ABU Robocon 2027 Phase 1 2Dシム: 観測ノード(認識・自己位置推定の簡易モック)。
 
 /true_state/* を購読し、ノイズ有り観測トピック(/br_pose_estimated,
-/tr_pose_estimated, /detected_blocks, /detected_mustika)を発行する。
-意思決定ノード(br_decision)はこちらを購読し、/true_state/*は直接見ない
-(topic_contract.mdの規約)。
+/tr_pose_estimated, /detected_blocks, /detected_mustika, /detected_towers)
+を発行する。意思決定ノード(br_decision)はこちらを購読し、/true_state/*は
+直接見ない(topic_contract.mdの規約)。
+
+/detected_towers(完成塔の一覧)は視野判定を行わない。塔はブロックと違って
+一度組み上がると動かない大型の構造物であり、フィールド上のどこからでも
+「何段組み上がっているか」を目視できるという前提(要調整: 厳密なカメラ
+画角を考慮すればもっと近くまで寄らないと段数までは判別できないはずだが、
+Phase1では簡略化する)。TR側の秘蹟の要件(Sanctuary Mandate)判定に使う。
 
 HANDOFFの指示通り、Phase1は「視野内のブロックをそのまま返す」簡易実装。
 視野は簡略化して、BR/TRそれぞれの位置からの円形検出範囲(DETECTION_RANGE_MM)
@@ -23,10 +29,18 @@ import math
 import random
 
 import rclpy
-from geometry_msgs.msg import Point, PointStamped, PoseWithCovarianceStamped, Quaternion
+from geometry_msgs.msg import Point, PoseWithCovarianceStamped, Quaternion
 from rclpy.node import Node
 
-from br_msgs.msg import BlockArray, DetectedBlock, DetectedBlockArray, MustikaPose, RobotPose
+from br_msgs.msg import (
+    BlockArray,
+    DetectedBlock,
+    DetectedBlockArray,
+    DetectedMustika,
+    MustikaPose,
+    RobotPose,
+    TowerArray,
+)
 
 from . import field_constants as fc
 from .physics_blocks import LEVEL_GROUND, LEVEL_L1, LEVEL_L2
@@ -63,12 +77,14 @@ class BrObservationNode(Node):
         self.pub_tr_pose_estimated = self.create_publisher(
             PoseWithCovarianceStamped, '/tr_pose_estimated', 10)
         self.pub_detected_blocks = self.create_publisher(DetectedBlockArray, '/detected_blocks', 10)
-        self.pub_detected_mustika = self.create_publisher(PointStamped, '/detected_mustika', 10)
+        self.pub_detected_mustika = self.create_publisher(DetectedMustika, '/detected_mustika', 10)
+        self.pub_detected_towers = self.create_publisher(TowerArray, '/detected_towers', 10)
 
         self.create_subscription(RobotPose, '/true_state/tr_pose', self._on_tr_pose, 10)
         self.create_subscription(RobotPose, '/true_state/br_pose', self._on_br_pose, 10)
         self.create_subscription(BlockArray, '/true_state/blocks', self._on_blocks, 10)
         self.create_subscription(MustikaPose, '/true_state/mustika_pose', self._on_mustika_pose, 10)
+        self.create_subscription(TowerArray, '/true_state/tower_state', self._on_tower_state, 10)
 
     def _add_noise(self, value: float) -> float:
         if not self._noise_enabled:
@@ -131,13 +147,17 @@ class BrObservationNode(Node):
     def _on_mustika_pose(self, msg: MustikaPose) -> None:
         if not self._is_in_view(msg.position.x, msg.position.y):
             return  # 視野外は発行しない
-        out = PointStamped()
-        out.header.stamp = self.get_clock().now().to_msg()
-        out.header.frame_id = 'field'
-        out.point.x = self._add_noise(msg.position.x)
-        out.point.y = self._add_noise(msg.position.y)
-        out.point.z = msg.position.z
+        out = DetectedMustika()
+        out.position = Point(
+            x=self._add_noise(msg.position.x),
+            y=self._add_noise(msg.position.y),
+            z=msg.position.z,
+        )
+        out.held_by = msg.held_by
         self.pub_detected_mustika.publish(out)
+
+    def _on_tower_state(self, msg: TowerArray) -> None:
+        self.pub_detected_towers.publish(msg)
 
 
 def main(args=None):

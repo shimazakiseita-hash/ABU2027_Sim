@@ -43,6 +43,7 @@ from . import field_constants as fc
 from .physics_blocks import (
     EVER_HELD_BLOCK_COLLISION_TYPE,
     LEVEL_GROUND,
+    LEVEL_L2,
     ROBOT_COLLISION_TYPE,
     PhysicsBlock,
     grasp_range_mm,
@@ -273,13 +274,16 @@ class SimBridgeNode(Node):
 
     def _execute_pending_build_action(self) -> None:
         """
-        /br_build_actionを実行する。action_typeは以下の2種類:
+        /br_build_actionを実行する。action_typeは以下の4種類:
         - PLACE_EARTH_BLOCK / PLACE_SKY_BLOCK: BRが現在保持しているブロックを
           対象の建築スポットへ配置する(block_typeとの厳密な整合性チェックは
           行わない。Phase1最初のゴールに向けた簡略化。要調整)。
         - FLIP_SKY_BLOCK: 対象の建築スポットに既に設置されている(最上段の)
           スカイブロックの上面色を反転する(ルールブック3.5.8の"stealing"。
           BRが保持している必要はなく、位置的な近さも今は問わない簡略化)。
+        - PLACE_MUSTIKA: BRが保持しているムスティカを中央支柱(FIELD_CENTER,
+          レベルL2)へ設置する(8.5)。建築スポットではなく専用のセントラル
+          ピラーが対象のため、target_build_spot_idは無視して先に処理する。
         self._towersはbuild_spot_id -> {"level": int, "blocks": [PhysicsBlock, ...]}
         で、実際のPhysicsBlockオブジェクトの参照を積み上げ順に保持する
         (block_types/owner_teams/top_colorsはtower_state発行時に毎回そこから
@@ -289,6 +293,16 @@ class SimBridgeNode(Node):
             return
         action = self._pending_build_action
         self._pending_build_action = None
+
+        if action.action_type == 'PLACE_MUSTIKA':
+            if self.mustika.held_by != 'br':
+                return
+            self.mustika.set_held_by('none')
+            self.mustika.set_level(LEVEL_L2)
+            self.mustika.body.position = (fc.FIELD_CENTER, fc.FIELD_CENTER)
+            self.mustika.body.velocity = (0, 0)
+            self.mustika.placed = True
+            return
 
         target = _build_spot_by_id(action.target_build_spot_id)
         if target is None:
@@ -331,6 +345,7 @@ class SimBridgeNode(Node):
         mustika_msg = MustikaPose()
         mustika_msg.position = Point(x=self.mustika.position.x, y=self.mustika.position.y, z=0.0)
         mustika_msg.level = self.mustika.level
+        mustika_msg.held_by = self.mustika.held_by
         self.pub_mustika_pose.publish(mustika_msg)
 
         self.pub_tower_state.publish(self._tower_state_msg())

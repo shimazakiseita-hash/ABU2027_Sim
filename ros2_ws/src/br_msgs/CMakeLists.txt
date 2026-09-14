@@ -18,6 +18,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TowerArray.msg"
   "msg/DetectedBlock.msg"
   "msg/DetectedBlockArray.msg"
+  "msg/DetectedMustika.msg"
   DEPENDENCIES geometry_msgs
 )
 
