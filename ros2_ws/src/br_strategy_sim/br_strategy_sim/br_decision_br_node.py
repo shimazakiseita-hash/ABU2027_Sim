@@ -11,14 +11,13 @@ ABU Robocon 2027 Phase 1 2Dシム: BR側の意思決定ノード(br_decision_br_
 WAIT_FOR_BLOCKは/detected_blocksをポーリングし、受渡しエリア内に
 held_by="none"のブロックが現れるのを待つだけの単純な実装(HANDOFF方針通り)。
 
-1つの建築スポット(BUILD_SPOT_ID固定)に完成塔(アース2段+スカイ1段)を
-作るところまでを対象にする。「今どの段を作っているか」をBUILD_SEQUENCE上の
-インデックス(_layer_index)として保持し、層ごとに「受渡しエリアで待つ対象の
+BUILD_SPOT_PLANで指定した複数の建築スポットに、順番に完成塔(アース2段+
+スカイ1段)を作っていく。「今何番目の塔を、その塔のどの段まで作っているか」を
+(_tower_index, _layer_index)として保持し、層ごとに「受渡しエリアで待つ対象の
 種別」と「/br_build_actionのaction_type」を切り替える。TR側
-(br_decision_tr_node.DELIVERY_SEQUENCE)と同じ順序を独立に前提として動く
-(通信プロトコルは持たない設計のため、両者とも自分のカウンタだけを頼りに
-同期する)。塔が完成したらTOWER_COMPLETEへ遷移し、以降は停止する
-(このゴールでは1塔のみを対象とし、複数塔・複数スポットへの拡張は後回し)。
+(br_decision_tr_node.DELIVERY_SEQUENCE)と同じ順序・同じ塔数を独立に前提として
+動く(通信プロトコルは持たない設計のため、両者とも自分のカウンタだけを頼りに
+同期する)。全ての塔が完成したらPLAN_COMPLETEへ遷移し、以降は停止する。
 """
 
 from __future__ import annotations
@@ -38,8 +37,11 @@ CONTROL_HZ = 10.0
 GRASP_TIMEOUT_TICKS = int(CONTROL_HZ * 5)
 BUILD_SETTLE_TICKS = int(CONTROL_HZ * 0.5)
 
-# 最初のゴールでは固定の建築スポットへ運ぶ(複数スポットへの割り振りは後回し)
-BUILD_SPOT_ID = 'l1_red_1'
+# 順番に完成塔を作る建築スポット。L2はルールブック上「全体が共用エリア」
+# (Building Spot: located on L1 (exclusive and shared) and L2 (all shared))
+# なので、l2_red_1を含めることで秘蹟の要件(Sanctuary Mandate: 完成塔2つ、
+# うち1つは共有エリア)を自然に満たせる計画にしてある。
+BUILD_SPOT_PLAN = ('l1_red_1', 'l2_red_1')
 
 # 塔の構成順(アース2段->スカイ1段)。各層で「待つ対象の種別」と
 # 「/br_build_actionのaction_type」の組を持つ。
@@ -58,7 +60,7 @@ class BrState(Enum):
     GRASP_FROM_TRANSFER = auto()
     APPROACH_BUILD_SPOT = auto()
     RELEASE_AND_BUILD = auto()
-    TOWER_COMPLETE = auto()
+    PLAN_COMPLETE = auto()
 
 
 def _build_spot_center(build_spot_id: str) -> tuple[float, float]:
@@ -77,6 +79,7 @@ class BrDecisionBrNode(Node):
         self._state = BrState.IDLE
         self._target_block_id: str | None = None
         self._timeout_counter = 0
+        self._tower_index = 0
         self._layer_index = 0
 
         self.pub_cmd_vel = self.create_publisher(Twist, '/br_cmd_vel', 10)
@@ -100,6 +103,9 @@ class BrDecisionBrNode(Node):
 
     def _find_block(self, block_id: str):
         return next((b for b in self._blocks.blocks if b.id == block_id), None)
+
+    def _current_build_spot_id(self) -> str:
+        return BUILD_SPOT_PLAN[self._tower_index]
 
     def _find_waiting_block(self):
         expected_type, _action_type = BUILD_SEQUENCE[self._layer_index]
@@ -142,14 +148,16 @@ class BrDecisionBrNode(Node):
                 # 一度見失っただけでは諦めず、その場で待って様子を見る
                 # (タイムアウトまで見つからなければ待機に戻る)
                 self.pub_cmd_vel.publish(Twist())
-                self.pub_gripper.publish(GripperCmd(open=False, target_force=1.0))
+                self.pub_gripper.publish(GripperCmd(
+                    open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
                 if self._timeout_counter > GRASP_TIMEOUT_TICKS:
                     self._target_block_id = None
                     self._state = BrState.WAIT_FOR_BLOCK
                 return
             twist, _arrived = drive_toward(self._current_uv(), (target.position.x, target.position.y))
             self.pub_cmd_vel.publish(twist)
-            self.pub_gripper.publish(GripperCmd(open=False, target_force=1.0))
+            self.pub_gripper.publish(GripperCmd(
+                open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
             if target.held_by == 'br':
                 self._state = BrState.APPROACH_BUILD_SPOT
             elif self._timeout_counter > GRASP_TIMEOUT_TICKS:
@@ -157,8 +165,9 @@ class BrDecisionBrNode(Node):
                 self._state = BrState.WAIT_FOR_BLOCK
 
         elif self._state == BrState.APPROACH_BUILD_SPOT:
-            self.pub_gripper.publish(GripperCmd(open=False, target_force=1.0))
-            twist, arrived = drive_toward(self._current_uv(), _build_spot_center(BUILD_SPOT_ID))
+            self.pub_gripper.publish(GripperCmd(
+                open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
+            twist, arrived = drive_toward(self._current_uv(), _build_spot_center(self._current_build_spot_id()))
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = BrState.RELEASE_AND_BUILD
@@ -168,20 +177,24 @@ class BrDecisionBrNode(Node):
             self.pub_cmd_vel.publish(Twist())
             _expected_type, action_type = BUILD_SEQUENCE[self._layer_index]
             self.pub_build_action.publish(
-                BuildAction(action_type=action_type, target_build_spot_id=BUILD_SPOT_ID))
+                BuildAction(action_type=action_type, target_build_spot_id=self._current_build_spot_id()))
             self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
             self._timeout_counter += 1
             if self._timeout_counter > BUILD_SETTLE_TICKS:
                 self._target_block_id = None
                 self._layer_index += 1
                 if self._layer_index >= len(BUILD_SEQUENCE):
-                    self._state = BrState.TOWER_COMPLETE
+                    self._layer_index = 0
+                    self._tower_index += 1
+                    if self._tower_index >= len(BUILD_SPOT_PLAN):
+                        self._state = BrState.PLAN_COMPLETE
+                    else:
+                        self._state = BrState.APPROACH_TRANSFER_AREA
                 else:
                     self._state = BrState.APPROACH_TRANSFER_AREA
 
-        elif self._state == BrState.TOWER_COMPLETE:
-            # BUILD_SEQUENCE分の設置が完了した。今回のゴールは単一の塔の
-            # 完成までなので、以降は何もせず停止する。
+        elif self._state == BrState.PLAN_COMPLETE:
+            # BUILD_SPOT_PLAN全ての塔の設置が完了した。以降は何もせず停止する。
             self.pub_cmd_vel.publish(Twist())
             self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
 

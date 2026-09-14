@@ -21,13 +21,13 @@ CAN 500kbpsの構成を予定している。
 
 **現在地：Phase 1実装中。** `br_msgs`（カスタムメッセージ）と`br_strategy_sim`
 （物理シム・審判・観測・TR/BR意思決定ノード一式）を実装済み。TRがストレージから
-アース2個・共用エリアからスカイ1個を受渡しエリア経由でBRに届け、BRが1つの
-建築スポットに完成塔（アース2段+スカイ1段）を組んで得点計算まで通す
-end-to-endループを確認済み（headless実行、`/score/red`が70点に到達）。
-得点計算・違反判定は公式ルールブック（後述）と突き合わせて整合済み。
+アース2個・共用エリアからスカイ1個を受渡しエリア経由でBRに届け、BRが複数の
+建築スポット（`br_decision_br_node.BUILD_SPOT_PLAN`、現状はL1・L2に1本ずつ）に
+順番に完成塔（アース2段+スカイ1段）を組んで得点計算まで通すend-to-endループを
+確認済み（headless実行、`/score/red`が最終的に210点に到達）。得点計算・違反判定は
+公式ルールブック（後述）と突き合わせて整合済み。
 
 未着手・既知の残課題：
-- 複数の建築スポット・複数の塔への拡張（現状は固定の建築スポット1箇所のみ）
 - ムスティカ（Mustika）関連の意思決定ロジック（秘蹟の要件=Sanctuary Mandateの
   判定を含む）
 - 6.4場外・6.5落下・6.6妨害の違反判定
@@ -59,7 +59,7 @@ end-to-endループを確認済み（headless実行、`/score/red`が70点に到
   - `br_observation_node` — 観測トピック(認識・自己位置推定)の簡易モック
   - `br_visualizer_node` — デバッグ用pygame可視化（スクリーンショット保存対応）
   - `br_decision_tr_node` / `br_decision_br_node` — TR/BRの意思決定ステート
-    マシン（現状はアース2段+スカイ1段の単一塔完成まで）
+    マシン（複数の建築スポットへのアース2段+スカイ1段の完成塔を順に構築）
   - `physics_blocks.py` / `robot_body.py` / `field_constants.py` /
     `field_drawing.py` / `decision_common.py` — 共通ロジック・定数・描画
 
