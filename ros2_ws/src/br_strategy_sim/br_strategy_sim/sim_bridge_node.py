@@ -34,6 +34,13 @@ BRと同じlevel_filterを適用するが、この前提(violation判定をpymun
 (_enforce_out_of_bounds参照)。違反の記録(Violation発行)自体はこれまで通り
 br_referee_nodeの責務で、/true_state/blocksから該当ブロックが消えたことを
 もって検出する(このノードから審判ノードへの逆方向のトピックは設けない)。
+
+9.4.1「ブザーが鳴ったら直ちにロボットを停止する」への対応として、
+br_referee_nodeが発行する/match_ended(std_msgs/Bool)を購読し、受信後は
+cmd_vel/gripper_cmd/build_actionの処理を一切行わずTR/BRの速度を強制的に
+ゼロに固定する(_step_physics参照)。得点自体はbr_referee_node側で
+ブザーの瞬間の状態を使って確定済みのため、このノードが停止するタイミングが
+多少ずれても最終得点には影響しない。
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ import pymunk
 import rclpy
 from geometry_msgs.msg import Point, Pose2D, Twist
 from rclpy.node import Node
+from std_msgs.msg import Bool
 
 from br_msgs.msg import Block, BlockArray, BuildAction, GripperCmd, MustikaPose, RobotPose, TowerArray, TowerState
 
@@ -181,11 +189,16 @@ class SimBridgeNode(Node):
         self._pending_build_action: BuildAction | None = None
         self._towers: dict[str, dict] = {}
 
+        # 9.1/9.4.1: /match_ended受信後はcmd_vel/gripper/build_actionの処理を
+        # 一切行わず、ロボットを強制停止する(_step_physics参照)
+        self._match_ended = False
+
         self.create_subscription(Twist, '/br_cmd_vel', self._on_br_cmd_vel, 10)
         self.create_subscription(Twist, '/tr_cmd_vel', self._on_tr_cmd_vel, 10)
         self.create_subscription(GripperCmd, '/br_gripper_cmd', self._on_br_gripper_cmd, 10)
         self.create_subscription(GripperCmd, '/tr_gripper_cmd', self._on_tr_gripper_cmd, 10)
         self.create_subscription(BuildAction, '/br_build_action', self._on_build_action, 10)
+        self.create_subscription(Bool, '/match_ended', self._on_match_ended, 10)
 
         self.pub_br_pose = self.create_publisher(RobotPose, '/true_state/br_pose', 10)
         self.pub_tr_pose = self.create_publisher(RobotPose, '/true_state/tr_pose', 10)
@@ -196,9 +209,14 @@ class SimBridgeNode(Node):
         self.create_timer(1.0 / PHYSICS_HZ, self._step_physics)
 
     def _on_br_cmd_vel(self, msg: Twist) -> None:
+        if self._match_ended:
+            return  # 9.4.1: 試合終了後の指令は反映しない(_step_physicsのゼロ化が
+            # このコールバックの方が後に届いた指令で上書きされるのを防ぐ)
         self.br.set_cmd_vel(msg.linear.x * M_TO_MM, msg.linear.y * M_TO_MM, msg.angular.z)
 
     def _on_tr_cmd_vel(self, msg: Twist) -> None:
+        if self._match_ended:
+            return
         self.tr.set_cmd_vel(msg.linear.x * M_TO_MM, msg.linear.y * M_TO_MM, msg.angular.z)
 
     def _on_br_gripper_cmd(self, msg: GripperCmd) -> None:
@@ -212,8 +230,21 @@ class SimBridgeNode(Node):
     def _on_build_action(self, msg: BuildAction) -> None:
         self._pending_build_action = msg
 
+    def _on_match_ended(self, msg: Bool) -> None:
+        # 一度trueになったら以後falseが来ても戻さない(想定上は一度しか
+        # 発行されないが念のため単調にしておく)
+        self._match_ended = self._match_ended or msg.data
+
     def _step_physics(self) -> None:
         self.space.step(1.0 / PHYSICS_HZ)
+        if self._match_ended:
+            # 9.4.1: ロボットは直ちに停止。以後の指令(cmd_vel/gripper/
+            # build_action)は一切反映しない(得点はbr_referee_node側で
+            # ブザーの瞬間の状態を使って既に確定している)。
+            self.br.set_cmd_vel(0.0, 0.0, 0.0)
+            self.tr.set_cmd_vel(0.0, 0.0, 0.0)
+            self._publish_true_state()
+            return
         # BuildActionの実行を先に行う: br_decisionはRELEASE_AND_BUILD状態で
         # BuildActionとgripper open(release)を同一tickで送るため、
         # _update_grasping()を先に呼ぶとgripper open処理でheld_by="none"に
