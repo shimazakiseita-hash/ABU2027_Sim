@@ -64,9 +64,11 @@ START_ZONE_SIZE = (700, 700)
 START_ZONE_1_ORIGIN = (0, 0)
 START_ZONE_2_ORIGIN = (700, 0)
 
-# ストレージエリア: 辺に沿って角から1000mmオフセットした位置から2000mm
-STORAGE_AREA_SIZE = (1000, 2000)
-STORAGE_AREA_ORIGIN = (0, 1000)  # 要調整可: 実際の図の辺方向に合わせて後で微修正
+# ストレージエリア: 長辺(2000mm)がフィールド外周の辺に平行、短辺(1000mm)が
+# 内側への奥行き(公式図面の実測値に基づき確定。U軸=ストレージエリア沿いの辺
+# という座標系定義と整合させた)
+STORAGE_AREA_SIZE = (2000, 1000)
+STORAGE_AREA_ORIGIN = (1000, 0)
 
 STORAGE_AREA_EARTH_BLOCK_COUNT = 20
 STORAGE_AREA_MAX_STACK = 2
