@@ -46,7 +46,9 @@ from .decision_common import (
     TRANSFER_POINT_ARRIVAL_THRESHOLD_MM,
     block_arrival_threshold_mm,
     drive_toward,
+    point_in_rect,
     sanctuary_mandate_satisfied,
+    transfer_area_rect,
     tr_transfer_release_point,
 )
 
@@ -148,11 +150,38 @@ class BrDecisionTrNode(Node):
     def _nearest_free_block(self, block_type: str):
         cur = self._current_uv()
         candidates = [b for b in self._blocks.blocks if b.block_type == block_type and b.held_by == 'none']
+        # level==0(ground)のブロックのみを対象にする。DetectedBlockには
+        # (観測トピックの制約上)「設置済みか」を示すplacedフィールドが無いが、
+        # 建築スポットへ設置されたブロックは必ずlevelが1(L1)/2(L2)へ切り替わる
+        # (sim_bridge_node._execute_pending_build_action参照)ため、これを
+        # 代わりに使える。これが無いと、l1_red_1建築スポットの座標がたまたま
+        # ストレージ寄りのuフィルタの範囲内に収まる場合、TRが既に設置済みの
+        # ブロックを「未使用のストレージ在庫」と誤認して再度持ち去り、受渡し
+        # エリアへ運び直してしまう(統合テストで発覚。得点が本来の460から
+        # 465になる/受渡し待ちが成立せず永久に停止する、の2パターンで再現)。
+        candidates = [b for b in candidates if b.level == 0]
+        # 受渡しエリア内(またはその付近)にあるブロックは対象から除外する。
+        # 制限が無いと、自分がさっき届けたもののBRがまだ受け取っていない
+        # ブロックが「一番近い候補」になり、それを再度拾って(実質同じものを
+        # 運び直すだけで)しまう。TRはBRの受け取り状況を知らずに一定時間で
+        # 次の配送に進む設計(受渡し後にBRの受領を待たない)なので、複数個
+        # 届ける場合はこの取り違えが起こり得る。当初はearthのみ
+        # storage_u_max(ストレージ寄りのuに限定)で対処していたが、skyには
+        # 対応する制限が無く、塔を2つ以上作る場合に「2個目のスカイ配送で
+        # 1個目のスカイを再度拾ってしまい、2個目の塔にスカイが永久に
+        # 届かない」不具合として顕在化した(統合テストで発覚。1塔構成では
+        # スカイの配送が1回きりだったため露見しなかった)。
+        transfer_origin, transfer_size = transfer_area_rect()
+        candidates = [
+            b for b in candidates
+            if not point_in_rect(b.position.x, b.position.y, transfer_origin, transfer_size)
+        ]
         if block_type == 'earth':
             # ストレージ付近(u座標がこの範囲内)のブロックだけを対象にする。
-            # 制限が無いと、受渡しエリア付近に自分がさっき届けたブロックが
-            # 一番近くなり、それを再度拾ってしまう(統合テストで発覚)。
-            storage_u_max = fc.STORAGE_AREA_ORIGIN[0] + fc.STORAGE_AREA_SIZE[0] + 500.0
+            # 受渡しエリア除外だけでは、受渡しエリアに向かう/そこから離れる
+            # 途中の座標(まだエリア外)にあるブロックまでは弾けないため、
+            # earthについては引き続きこちらも併用する。
+            storage_u_max = fc.TRANSFER_AREA_ORIGIN[0] - 200.0
             candidates = [b for b in candidates if b.position.x <= storage_u_max]
         elif block_type == 'sky':
             # 自チームの色が上を向いている個体だけを対象にする(得点はowner_team

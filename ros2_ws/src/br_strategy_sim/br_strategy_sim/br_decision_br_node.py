@@ -135,7 +135,16 @@ class BrDecisionBrNode(Node):
         expected_type, _action_type = BUILD_SEQUENCE[self._layer_index]
         origin, size = transfer_area_rect()
         for b in self._blocks.blocks:
-            if (b.held_by == 'none' and b.block_type == expected_type
+            # level==0(ground)のブロックのみを対象にする。設置済みブロックは
+            # 必ずlevelが1(L1)/2(L2)へ切り替わる
+            # (sim_bridge_node._execute_pending_build_action参照)ため、この
+            # チェックが無いと「既に設置済みのブロック」を再度回収し得る。
+            # 特にl2_red_1の建築スポット中心(4250,4250)は受渡しエリア
+            # (TRANSFER_AREA_ORIGIN+TRANSFER_AREA_SIZE)の角と偶然一致して
+            # おり、point_in_rectの判定に引っかかってしまうため実害があった
+            # (統合テストで発覚。br_decision_tr_node._nearest_free_blockの
+            # 同種の修正も参照)。
+            if (b.held_by == 'none' and b.block_type == expected_type and b.level == 0
                     and point_in_rect(b.position.x, b.position.y, origin, size)):
                 return b
         return None

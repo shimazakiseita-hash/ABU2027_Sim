@@ -246,20 +246,57 @@ class BrRefereeNode(Node):
             self._publish_violation('push', robot, block.owner_team, forced_retry=True)
 
     def _check_release(self, block) -> None:
-        """6.3受渡し違反 / 受渡し点。held=True->Falseの遷移のうち、建築設置ではないものが対象。"""
-        was_held = self._prev_block_held.get(block.id, "none") != "none"
+        """
+        6.3受渡し違反 / 8.1受渡し点。held=True->Falseの遷移のうち、建築設置
+        ではないものが対象。
+
+        以前は「block.level != LEVEL_L1ならreturn」という判定があったが、
+        これは誤り: block.levelはブロックが何段目に積まれているか(0=ground,
+        1=L1, 2=L2)を表すスタック高さであり、未設置のブロックは受渡しエリア
+        内にあっても常にlevel=0(ground)のまま(sim_bridge_node参照。levelは
+        _execute_pending_build_actionで実際に設置されたときにしか変わらない)。
+        そのためこの判定は「未設置(=これから受渡し点を判定すべき対象)」を
+        逆に毎回弾いてしまい、受渡し点(8.1)が一度も加算されない不具合の
+        原因になっていた。「建築設置かどうか」は直前のpending_build_actionの
+        有無で既に判別済みなので、level判定自体が不要だった。
+
+        もう1点、pending_build_actionの消費対象もTR/BRを区別せず「直近に
+        BuildActionがあれば、次に見つかった保持->解放イベント全てを建築設置
+        とみなす」実装になっていたため、TRの受渡し解放とBRの建築設置が
+        同一の/true_state/blocksメッセージ内で同時に起きた場合、どちらが
+        先にイテレートされるかによってTR側の受渡しが誤って「建築設置」と
+        判定され、受渡し点が消費されるだけで加算されない不具合があった
+        (統合テストで発覚。BuildActionを実際に発行できるのはBRだけなので、
+        「直前の保持者がbrだった場合」に限定することで解消する)。
+        """
+        was_held_by = self._prev_block_held.get(block.id, "none")
+        was_held = was_held_by != "none"
         if not was_held or block.held_by != "none":
             return  # 「保持中->解放」の遷移でなければ対象外
-        if self._pending_build_action is not None:
-            # 直近にBuildActionがあった解放は建築設置とみなし、受渡し判定はしない
+        if self._pending_build_action is not None and was_held_by == "br":
+            # 直近にBuildActionがあった、かつ直前の保持者がBRだった解放は
+            # 建築設置とみなし、受渡し判定はしない
             self._pending_build_action = None
             return
-        if block.level != LEVEL_L1:
+        if block.block_type not in ('earth', 'sky'):
+            # 8.1「アースブロックまたはスカイブロック1個につき5点」に明記の
+            # 対象のみ。ムスティカは受渡し点の対象外(8.5で別途250点を計上)。
+            # (現実装ではmustikaはBlockArrayに含まれずこの関数に渡ってくる
+            # ことはないが、条文の対象を明示するため型でも防御しておく)
             return
+        # 受渡し点の帰属チームはblock.owner_teamではなくself._own_teamを使う。
+        # owner_teamは8.3.1のタワー得点計算用のフィールドで、スカイブロックは
+        # 所有権の概念が無いため常に""(_recompute_tower_score参照)であり、
+        # これをそのまま渡すと_add_scoreがteam未確定として黙って無視してしまい
+        # スカイブロックの受渡し点だけが一度も加算されない不具合があった。
+        # ここでTR-BR間の受渡しを行えるのはPhase1では自チーム(=self._own_team)
+        # のTRだけなので、block_typeによらず常にself._own_teamに帰属させれば
+        # よい(アースブロックの場合もowner_teamは元々自チーム固定なので結果は
+        # 同じになる)。
         if _point_in_rect(block.position.x, block.position.y, fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE):
-            self._add_score(block.owner_team, fc.SCORE_TRANSFER_PER_BLOCK)
+            self._add_score(self._own_team, fc.SCORE_TRANSFER_PER_BLOCK)
         else:
-            self._publish_violation('transfer', 'br', block.owner_team, forced_retry=True)
+            self._publish_violation('transfer', 'br', self._own_team, forced_retry=True)
 
     def _check_grasp(self, block) -> None:
         """
