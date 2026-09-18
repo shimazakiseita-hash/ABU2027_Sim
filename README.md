@@ -88,6 +88,29 @@ ros2 topic echo /score/red
 アース1段目・2段目・スカイの順でさらに加算）→ 210 →（ムスティカ奉納）→ 460
 と増えていけば正常に動作している（各塔ともアース1段目・2段目・スカイの順）。
 
+## テスト
+
+`br_strategy_sim/test/`に受け入れテスト（pytest）がある。`ros2 launch`は
+使わず、全ノードを1プロセス内でインスタンス化して`SingleThreadedExecutor`で
+駆動する方式（この開発環境では複数プロセス起動が不安定だったため。
+CLAUDE.md参照）。意思決定ロジックが実際にロボットを動かして検証するため、
+早送りはできず実時間で数分かかる。
+
+```bash
+./tools/build.sh
+colcon test --packages-select br_strategy_sim
+colcon test-result --verbose
+```
+
+個別に実行・デバッグしたい場合は直接pytestを呼んでもよい（`tools/build.sh`と
+同じくvenvを無効化してから）:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/setup.bash
+python3 -m pytest ros2_ws/src/br_strategy_sim/test/ -v
+```
+
 ## パッケージ構成
 
 - `br_msgs` — カスタムメッセージ定義一式
