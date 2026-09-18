@@ -86,11 +86,21 @@ ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
 
 | トピック名 | 型 | 内容 |
 |---|---|---|
-| `/score/red` | `std_msgs/Int32` | 赤チーム得点（リアルタイム） |
+| `/score/red` | `std_msgs/Int32` | 赤チーム得点（試合終了まではリアルタイム、終了後は最終値で固定） |
 | `/score/blue` | `std_msgs/Int32` | 青チーム得点 |
 | `/violation` | カスタム msg `Violation` | 違反種別・対象ロボット・強制リトライ要否 |
+| `/match_ended` | `std_msgs/Bool` | 試合終了(ブザー)を一度だけ通知する。sim_bridge_nodeがこれを購読しTR/BRを強制停止する |
 
-判定ロジック（6章・7.2・8章に対応。条文はルールブックより）：
+判定ロジック（6章・7.2・8章・9章に対応。条文はルールブックより）：
+- 9.1 試合時間：ノード起動から`MATCH_DURATION_SEC`(3分)経過した瞬間の状態で
+  最終得点を確定し、`/match_ended`を発行する（9.1.3）。以後は`/true_state/*`
+  が変化しても得点・違反判定を更新しない。ロボットの強制停止（9.4.1）は
+  sim_bridge_nodeが`/match_ended`を購読し、以後のcmd_vel/gripper/build_action
+  を一切反映せず速度をゼロに固定することで行う
+- 9.4.2 保持中の物体の得点除外：ムスティカは`_mustika_on_central_pillar`に
+  `held_by=="none"`チェックを追加して対応。アース/スカイブロックは設置
+  （release）済みのものだけがtower_stateに現れる設計のため、保持中のものは
+  そもそも得点計算に含まれず追加対応は不要
 - 6.1 押出し禁止：ロボットはブロックを持ち上げるか運搬しなければならない。
   床面上を押す・引きずる・滑らせて移動させる行為は禁止 → `violation`(forced_retry=true)
 - 6.2.1 区域違反(TR)：TRのいずれかの部分が受渡しエリアを越えてL1/L2の

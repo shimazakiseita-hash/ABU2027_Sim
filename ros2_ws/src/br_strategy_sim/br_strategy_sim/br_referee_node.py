@@ -25,6 +25,16 @@ ABU Robocon 2027 Phase 1 2Dシム: 審判ノード(br_referee_node)。
 ムスティカを開始位置へ復帰)する物理的な処理を行う。このノードはそれを
 /true_state/blocksから該当ブロックのidが消えたことで検出し、Violationの
 記録のみを行う(_check_disappeared_blocks参照)。
+
+9.1試合時間(3分, field_constants.MATCH_DURATION_SEC)：ノード起動time基準で
+経過時間を監視し、経過したら/match_ended(std_msgs/Bool)を一度だけ発行して
+以後の得点再計算・違反判定を停止する(9.1.3/9.4.1「ブザーが鳴った瞬間の状態で
+最終得点を確定する」「ロボットは直ちに停止」に対応。ロボット停止自体は
+sim_bridge_nodeが/match_endedを購読して行う)。9.4.2「保持中の物体はその
+タスクの得点を除外」は、ムスティカについては_mustika_on_central_pillarに
+held_by=="none"チェックを追加することで対応済み(アース/スカイブロックは
+設置=released済みのものしかtower_stateに現れないため、保持中のものは
+そもそも得点計算に含まれず追加対応不要)。
 """
 
 from __future__ import annotations
@@ -34,7 +44,7 @@ import math
 import rclpy
 from geometry_msgs.msg import Point
 from rclpy.node import Node
-from std_msgs.msg import Int32
+from std_msgs.msg import Bool, Int32
 
 from br_msgs.msg import BlockArray, BuildAction, MustikaPose, RobotPose, TowerArray, Violation
 
@@ -80,9 +90,16 @@ class BrRefereeNode(Node):
         self._tower_score = {fc.TeamColor.RED: 0, fc.TeamColor.BLUE: 0}
         self._transfer_score = {fc.TeamColor.RED: 0, fc.TeamColor.BLUE: 0}
 
+        # 9.1試合時間: ノード起動時刻を試合開始とみなし、MATCH_DURATION_SEC
+        # 経過で試合終了(ブザー)とする。以後は得点再計算・違反判定を行わない
+        # (9.1.3: 最終得点はブザーが鳴った瞬間の状態で確定するため)。
+        self._match_start_time = self.get_clock().now()
+        self._match_ended = False
+
         self.pub_score_red = self.create_publisher(Int32, '/score/red', 10)
         self.pub_score_blue = self.create_publisher(Int32, '/score/blue', 10)
         self.pub_violation = self.create_publisher(Violation, '/violation', 10)
+        self.pub_match_ended = self.create_publisher(Bool, '/match_ended', 10)
 
         self.create_subscription(RobotPose, '/true_state/tr_pose', self._on_tr_pose, 10)
         self.create_subscription(RobotPose, '/true_state/br_pose', self._on_br_pose, 10)
@@ -91,10 +108,30 @@ class BrRefereeNode(Node):
         self.create_subscription(TowerArray, '/true_state/tower_state', self._on_tower_state, 10)
         self.create_subscription(BuildAction, '/br_build_action', self._on_build_action, 10)
 
+        self.create_timer(0.1, self._check_match_timer)
+
+    # --- 試合時間 (9.1) ---
+
+    def _check_match_timer(self) -> None:
+        if self._match_ended:
+            return
+        elapsed_sec = (self.get_clock().now() - self._match_start_time).nanoseconds / 1e9
+        if elapsed_sec < fc.MATCH_DURATION_SEC:
+            return
+        # 9.1.3: ブザーが鳴った瞬間の状態で最終得点を確定する。以後は
+        # /true_state/*が変化しても得点・違反判定に反映しない(_on_blocks等の
+        # ガード参照)。ロボットの物理的な停止はsim_bridge_node側の責務
+        # (/match_endedを購読して行う。9.4.1)。
+        self._match_ended = True
+        self._recompute_tower_score()
+        self.pub_match_ended.publish(Bool(data=True))
+
     # --- 区域侵犯 (6.2) ---
 
     def _on_tr_pose(self, msg: RobotPose) -> None:
         self._tr_pose = msg
+        if self._match_ended:
+            return
         if msg.level in (LEVEL_L1, LEVEL_L2):
             # 6.2.1: TRは受渡しエリアを越えてL1/L2の鉛直境界内へ入ってはならない
             self._publish_violation('zone', 'tr', self._own_team, forced_retry=True)
@@ -105,6 +142,8 @@ class BrRefereeNode(Node):
     def _on_br_pose(self, msg: RobotPose) -> None:
         # BRは建築のためL1/L2に登る前提なので、レベル侵入自体は違反にしない(6.2.1はTR限定)
         self._br_pose = msg
+        if self._match_ended:
+            return
         if self._in_opponent_zone(msg.pose.x, msg.pose.y, msg.level):
             self._publish_violation('zone', 'br', self._own_team, forced_retry=True)
 
@@ -138,6 +177,8 @@ class BrRefereeNode(Node):
     # --- ブロックの状態遷移: 6.1押出し / 7.2設置済み移動(失格) / 6.3受渡し ---
 
     def _on_blocks(self, msg: BlockArray) -> None:
+        if self._match_ended:
+            return
         current_ids = set()
         for block in msg.blocks:
             current_ids.add(block.id)
@@ -262,6 +303,8 @@ class BrRefereeNode(Node):
     # --- 得点計算 (8章) ---
 
     def _on_mustika_pose(self, msg: MustikaPose) -> None:
+        if self._match_ended:
+            return
         self._check_mustika_out_of_bounds_reset(msg)
         self._mustika_pose = msg
         self._recompute_tower_score()
@@ -293,6 +336,8 @@ class BrRefereeNode(Node):
         self._publish_violation('out_of_bounds', robot or 'br', self._own_team, forced_retry=True)
 
     def _on_tower_state(self, msg: TowerArray) -> None:
+        if self._match_ended:
+            return
         self._tower_state = msg
         self._recompute_tower_score()
 
@@ -336,7 +381,16 @@ class BrRefereeNode(Node):
         self._publish_scores()
 
     def _mustika_on_central_pillar(self) -> bool:
-        if self._mustika_pose is None or self._mustika_pose.level != LEVEL_L2:
+        """
+        8.5奉納の成立条件。9.4.2「保持中の物体はそのタスクの得点を除外」に
+        対応するため、held_by!="none"(ロボットが保持中)なら常にFalseとする
+        (現状のBR実装ではPLACE_MUSTIKA成立時にheld_by="none"かつlevel=L2へ
+        同時に切り替わるため実際には起こらないが、条文の明文規定でもあり
+        安全側の保証として明示的にチェックする)。
+        """
+        if self._mustika_pose is None or self._mustika_pose.held_by != 'none':
+            return False
+        if self._mustika_pose.level != LEVEL_L2:
             return False
         dx = self._mustika_pose.position.x - fc.FIELD_CENTER
         dy = self._mustika_pose.position.y - fc.FIELD_CENTER

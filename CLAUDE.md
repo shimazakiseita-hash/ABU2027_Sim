@@ -36,6 +36,14 @@ end-to-endループを確認済み（headless実行、`/score/red`が最終的�
 `/true_state/blocks`からのid消失・ムスティカの位置遷移から検出して
 `violation`(type="out_of_bounds")を記録する。
 
+9.1試合時間（3分）も実装済み：br_referee_nodeがノード起動から
+`MATCH_DURATION_SEC`経過を監視し、経過した瞬間の状態で最終得点を確定して
+`/match_ended`(std_msgs/Bool)を一度だけ発行する。sim_bridge_nodeはこれを
+購読し、以後のcmd_vel/gripper/build_actionを一切反映せずTR/BRを強制停止する
+（9.4.1）。保持中の物体の得点除外（9.4.2）はムスティカの奉納判定に
+`held_by=="none"`チェックを追加することで対応（アース/スカイブロックは
+設置済みのものしか得点計算に現れない設計のため元々対応不要だった）。
+
 未着手・既知の残課題：
 - 6.5落下：Phase1の物理モデルには「ロボットが保持中のブロックを意図せず
   落とす」という事象自体が存在しない（heldブロックは保持中に他物体と
