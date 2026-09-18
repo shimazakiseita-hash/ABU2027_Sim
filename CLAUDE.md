@@ -69,6 +69,14 @@ end-to-endループを確認済み（headless実行、`/score/red`が最終的�
 - pymunk (2D物理), pygame (2D可視化)
 - MuJoCo (Phase 2、未着手)
 
+## テスト
+
+`br_strategy_sim/test/`にpytestベースの受け入れテスト一式がある
+（`_sim_harness.py`が共通ヘルパー）。`ros2 launch`は使わず、全ノードを
+1プロセス内で直接インスタンス化し`SingleThreadedExecutor`で駆動する方式
+（下記「環境メモ」参照）。`colcon test --packages-select br_strategy_sim`で
+自動的に拾われる。実行手順はREADME.md「テスト」参照。
+
 ## パッケージ構成
 
 - `br_msgs` — カスタムメッセージ定義一式（`docs/topic_contract.md`参照）
@@ -109,6 +117,11 @@ line**"）とフィールド寸法図（ユーザー提供画像）の両方で�
 
 ## 環境メモ
 
+- 開発環境によっては`ros2 launch`での複数プロセス起動が不安定（子プロセスが
+  不定期にSIGKILLされる等）なことがある。手動確認・自動テストとも、全ノードを
+  1プロセス内で直接インスタンス化し`SingleThreadedExecutor`で駆動する方式
+  （`br_strategy_sim/test/_sim_harness.py`参照）の方が確実。実際に
+  `./tools/sim_start.sh`（`ros2 launch`経由）で起動して使う分には問題ない。
 - 何らかのPython venvを有効にしたまま`colcon build`すると、そのvenvの
   python3に`empy`が入っておらず`rosidl_adapter`が
   `ModuleNotFoundError: No module named 'em'`で失敗することがある。
