@@ -26,9 +26,10 @@ ABU Robocon 2027 Phase 1 2Dシム: 審判ノード(br_referee_node)。
 /true_state/blocksから該当ブロックのidが消えたことで検出し、Violationの
 記録のみを行う(_check_disappeared_blocks参照)。
 
-9.1試合時間(3分, field_constants.MATCH_DURATION_SEC)：ノード起動time基準で
-経過時間を監視し、経過したら/match_ended(std_msgs/Bool)を一度だけ発行して
-以後の得点再計算・違反判定を停止する(9.1.3/9.4.1「ブザーが鳴った瞬間の状態で
+9.1試合時間(3分がデフォルト。match_duration_secパラメータ、既定値は
+field_constants.MATCH_DURATION_SEC)：ノード起動time基準で経過時間を監視し、
+経過したら/match_ended(std_msgs/Bool)を一度だけ発行して以後の得点再計算・
+違反判定を停止する(9.1.3/9.4.1「ブザーが鳴った瞬間の状態で
 最終得点を確定する」「ロボットは直ちに停止」に対応。ロボット停止自体は
 sim_bridge_nodeが/match_endedを購読して行う)。9.4.2「保持中の物体はその
 タスクの得点を除外」は、ムスティカについては_mustika_on_central_pillarに
@@ -90,9 +91,15 @@ class BrRefereeNode(Node):
         self._tower_score = {fc.TeamColor.RED: 0, fc.TeamColor.BLUE: 0}
         self._transfer_score = {fc.TeamColor.RED: 0, fc.TeamColor.BLUE: 0}
 
-        # 9.1試合時間: ノード起動時刻を試合開始とみなし、MATCH_DURATION_SEC
+        # 9.1試合時間: ノード起動時刻を試合開始とみなし、match_duration_sec
         # 経過で試合終了(ブザー)とする。以後は得点再計算・違反判定を行わない
         # (9.1.3: 最終得点はブザーが鳴った瞬間の状態で確定するため)。
+        # デフォルトはfield_constants.MATCH_DURATION_SEC(3分)だが、
+        # br_teleop_nodeでの長時間の手動テスト時にcmd_vel等が無視される
+        # ようになるのを避けたい場合のため、パラメータで上書きできるように
+        # しておく(例: match_duration_sec:=999999)。
+        self.declare_parameter('match_duration_sec', float(fc.MATCH_DURATION_SEC))
+        self._match_duration_sec = self.get_parameter('match_duration_sec').value
         self._match_start_time = self.get_clock().now()
         self._match_ended = False
 
@@ -116,7 +123,7 @@ class BrRefereeNode(Node):
         if self._match_ended:
             return
         elapsed_sec = (self.get_clock().now() - self._match_start_time).nanoseconds / 1e9
-        if elapsed_sec < fc.MATCH_DURATION_SEC:
+        if elapsed_sec < self._match_duration_sec:
             return
         # 9.1.3: ブザーが鳴った瞬間の状態で最終得点を確定する。以後は
         # /true_state/*が変化しても得点・違反判定に反映しない(_on_blocks等の

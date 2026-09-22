@@ -9,7 +9,8 @@ br_decision_tr_node, br_decision_br_nodeをまとめて起動する。
     ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
     ros2 launch br_strategy_sim launch_simulator.py team:=blue
     ros2 launch br_strategy_sim launch_simulator.py enable_decision:=false
-    ros2 launch br_strategy_sim launch_simulator.py enable_decision:=false enable_teleop:=true
+    ros2 launch br_strategy_sim launch_simulator.py enable_decision:=false enable_teleop:=true \
+        match_duration_sec:=999999
 """
 
 from launch import LaunchDescription
@@ -32,6 +33,13 @@ def generate_launch_description():
     # enable_decision:=false と組み合わせて、意思決定ノードの代わりに
     # 手動でTR/BRを動かす用途を想定
     enable_teleop_arg = DeclareLaunchArgument('enable_teleop', default_value='false')
+    # br_referee_nodeが9.1試合時間の終了(ブザー)とみなすまでの秒数。
+    # 既定値はfield_constants.MATCH_DURATION_SEC(3分=180秒)と一致させて
+    # あるが、手動操縦(enable_teleop:=true)で3分を超えて長時間テストしたい
+    # 場合は大きな値(例: 999999)を指定する。試合終了後はsim_bridge_nodeが
+    # 全てのcmd_vel/gripper_cmd等を無視するようになるため(9.4.1)、これを
+    # 忘れると「操作しても反応しない」ように見える
+    match_duration_sec_arg = DeclareLaunchArgument('match_duration_sec', default_value='180.0')
 
     return LaunchDescription([
         observation_noise_arg,
@@ -39,12 +47,16 @@ def generate_launch_description():
         screenshot_path_arg,
         enable_decision_arg,
         enable_teleop_arg,
+        match_duration_sec_arg,
         Node(package='br_strategy_sim', executable='br_sim_bridge_node', name='br_sim_bridge_node'),
         Node(
             package='br_strategy_sim',
             executable='br_referee_node',
             name='br_referee_node',
-            parameters=[{'team': LaunchConfiguration('team')}],
+            parameters=[{
+                'team': LaunchConfiguration('team'),
+                'match_duration_sec': LaunchConfiguration('match_duration_sec'),
+            }],
         ),
         Node(
             package='br_strategy_sim',
