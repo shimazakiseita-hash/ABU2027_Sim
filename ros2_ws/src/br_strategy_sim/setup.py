@@ -31,6 +31,7 @@ setup(
             'br_visualizer_node = br_strategy_sim.br_visualizer_node:main',
             'br_decision_tr_node = br_strategy_sim.br_decision_tr_node:main',
             'br_decision_br_node = br_strategy_sim.br_decision_br_node:main',
+            'br_teleop_node = br_strategy_sim.br_teleop_node:main',
         ],
     },
 )
