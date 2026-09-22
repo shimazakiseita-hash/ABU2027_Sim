@@ -78,12 +78,19 @@ python3に正しくインストールされる。
                                                 # (SDL_VIDEODRIVER=dummy)で
                                                 # 可視化ノードが最新フレームを
                                                 # 毎ティック上書き保存する
-./tools/sim_start.sh enable_decision:=false enable_teleop:=true
+./tools/sim_start.sh enable_decision:=false enable_teleop:=true \
+                      match_duration_sec:=999999
                                                 # TR/BRの自律ロジックを止め、
                                                 # 代わりにキーボード手動操縦
                                                 # コンソール(br_teleop_node)を
                                                 # 起動する。可視化ウィンドウとは
-                                                # 別ウィンドウが開く
+                                                # 別ウィンドウが開く。
+                                                # match_duration_sec指定は必須
+                                                # ではないが、既定の3分を過ぎると
+                                                # 9.1試合終了扱いになり以後の
+                                                # 操作が一切反映されなくなるため、
+                                                # 長時間テストするなら大きな値を
+                                                # 指定しておくとよい
 ```
 
 複数指定する場合は空白区切りでそのまま並べればよい
@@ -105,6 +112,12 @@ TR/BRいずれも既存のトピック契約（`/tr_cmd_vel`等）へpublishす�
 sim_bridge_node側の変更は不要（自律ノードの代わりに同じトピックへ
 publishすれば操縦元を差し替えられる設計）。初回実装は移動とグリッパー
 開閉のみで、BuildAction（手動での建築）は未対応。
+
+**注意**: 起動から既定の3分（`match_duration_sec`、9.1試合時間）を過ぎると
+`sim_bridge_node`が以後の全てのcmd_vel/gripper指令を無視するようになる
+（試合終了扱い）。キーを押しても反応しなくなった場合、これが原因の可能性が
+高い。長時間テストするときは起動時に`match_duration_sec:=999999`等を
+指定しておくこと。
 
 ### 動作確認だけしたい場合
 

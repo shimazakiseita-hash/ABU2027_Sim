@@ -69,10 +69,10 @@ class BrTeleopNode(Node):
     def _tick(self) -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                self._quit_requested = True
+                self._request_quit()
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
-                    self._quit_requested = True
+                    self._request_quit()
                 elif event.key == pygame.K_TAB:
                     self._active_robot = 'br' if self._active_robot == 'tr' else 'tr'
                 elif event.key == pygame.K_SPACE:
@@ -111,13 +111,24 @@ class BrTeleopNode(Node):
 
         self._render()
 
+    def _request_quit(self) -> None:
+        # rclpy.spin(node)を使う標準的な形に合わせるため(下記main参照)、
+        # ウィンドウを閉じる/Escで終了したい場合はrclpy.shutdown()を直接
+        # 呼んでspin()自体を抜けさせる(rclpy.ok()がFalseになりループが終わる)。
+        self._quit_requested = True
+        if rclpy.ok():
+            rclpy.shutdown()
+
     def _render(self) -> None:
+        # pygame.font.SysFont(None, ...)の既定フォントは日本語グリフを
+        # 持たないため、画面表示は英語のみにする(field_drawing.pyの
+        # 画面表示が全て英語なのも同じ理由。文字化けの原因になっていた)。
         self._screen.fill((30, 30, 35))
 
         lines = [
-            f'操作対象: {self._active_robot.upper()}  (Tab で切替)',
+            f'ACTIVE: {self._active_robot.upper()}   (Tab to switch)',
             '',
-            'W/A/S/D: 移動   Space: グリッパー開閉トグル   Esc: 終了',
+            'W/A/S/D: move    Space: toggle gripper    Esc: quit',
             '',
         ]
         for robot in _ROBOT_IDS:
@@ -141,12 +152,20 @@ def main(args=None):
     rclpy.init(args=args)
     node = BrTeleopNode()
     try:
-        while rclpy.ok() and not node.should_quit():
-            rclpy.spin_once(node, timeout_sec=0.05)
+        # 他のノード(br_visualizer_node等)と同じくrclpy.spin(node)を使う。
+        # 独自のspin_onceループ(timeout_sec=0.05)を_tickのタイマー周期
+        # (1/CONTROL_HZ=0.05s)と偶然一致させていた旧実装は、タイミングが
+        # ぴったり噛み合わずタイマーが安定して発火しない場合があった
+        # (WASD操作が反応しないという報告で発覚)。ウィンドウを閉じる/Escでの
+        # 終了は_request_quitが直接rclpy.shutdown()を呼ぶことで実現する。
+        rclpy.spin(node)
+    except rclpy.executors.ExternalShutdownException:
+        pass
     finally:
         pygame.quit()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
