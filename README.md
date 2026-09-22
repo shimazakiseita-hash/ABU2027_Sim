@@ -22,8 +22,13 @@ ROS2ノードは system python3（`/usr/bin/python3`）で実行する前提。�
 Python venv環境を有効にしたまま実行しないこと（後述の既知の環境問題参照）。
 
 ```bash
-/usr/bin/python3 -m pip install --user pygame pymunk
+/usr/bin/python3 -m pip install --user --break-system-packages pygame pymunk
 ```
+
+`--break-system-packages`が無いと、比較的新しいDebian/Ubuntu(PEP 668)では
+`externally-managed-environment`エラーで失敗する。`/usr/bin/python3`を
+絶対パスで指定しているため、他のvenvが有効になっていてもシステムの
+python3に正しくインストールされる。
 
 ### 2. ビルド
 
