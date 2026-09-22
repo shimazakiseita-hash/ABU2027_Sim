@@ -73,10 +73,33 @@ Python venv環境を有効にしたまま実行しないこと（後述の既知
                                                 # (SDL_VIDEODRIVER=dummy)で
                                                 # 可視化ノードが最新フレームを
                                                 # 毎ティック上書き保存する
+./tools/sim_start.sh enable_decision:=false enable_teleop:=true
+                                                # TR/BRの自律ロジックを止め、
+                                                # 代わりにキーボード手動操縦
+                                                # コンソール(br_teleop_node)を
+                                                # 起動する。可視化ウィンドウとは
+                                                # 別ウィンドウが開く
 ```
 
 複数指定する場合は空白区切りでそのまま並べればよい
 （例: `./tools/sim_start.sh team:=blue observation_noise:=true`）。
+
+### 手動操縦（デバッグ用）
+
+`enable_teleop:=true`で起動した操縦コンソールのウィンドウにフォーカスした
+状態で操作する：
+
+| キー | 動作 |
+|---|---|
+| Tab | 操作対象をTR/BRで切替 |
+| W/A/S/D | 対象ロボットをフィールド座標(u,v)で移動（押している間だけ） |
+| Space | 対象ロボットのグリッパー開閉をトグル |
+| Esc | 終了 |
+
+TR/BRいずれも既存のトピック契約（`/tr_cmd_vel`等）へpublishするだけなので、
+sim_bridge_node側の変更は不要（自律ノードの代わりに同じトピックへ
+publishすれば操縦元を差し替えられる設計）。初回実装は移動とグリッパー
+開閉のみで、BuildAction（手動での建築）は未対応。
 
 ### 動作確認だけしたい場合
 
@@ -123,6 +146,7 @@ python3 -m pytest ros2_ws/src/br_strategy_sim/test/ -v
   - `br_observation_node` — 観測トピックの簡易モック（認識・自己位置推定）
   - `br_visualizer_node` — デバッグ用pygame可視化
   - `br_decision_tr_node` / `br_decision_br_node` — TR/BRの意思決定ロジック
+  - `br_teleop_node` — キーボード手動操縦コンソール（デバッグ用、`enable_teleop:=true`）
   - `field_constants.py` / `physics_blocks.py` / `robot_body.py` /
     `field_drawing.py` / `decision_common.py` — 共通の定数・物理・描画ロジック
 

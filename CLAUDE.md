@@ -103,6 +103,10 @@ end-to-endループを確認済み（headless実行、正常完走時`/score/red
   - `br_decision_tr_node` / `br_decision_br_node` — TR/BRの意思決定ステート
     マシン（複数の建築スポットへのアース2段+スカイ1段の完成塔を順に構築した後、
     秘蹟の要件を満たしてムスティカを回収・中央支柱へ設置するところまで）
+  - `br_teleop_node` — キーボード手動操縦コンソール（デバッグ用、`enable_teleop:=true`
+    で起動。意思決定ノードと同じ`/*_cmd_vel`・`/*_gripper_cmd`へpublishするだけの
+    実装なので、sim_bridge_node側は無改造で操縦元を差し替えられる。移動と
+    グリッパー開閉のみ対応、BuildActionによる手動建築は未対応)
   - `physics_blocks.py` / `robot_body.py` / `field_constants.py` /
     `field_drawing.py` / `decision_common.py` — 共通ロジック・定数・描画
 

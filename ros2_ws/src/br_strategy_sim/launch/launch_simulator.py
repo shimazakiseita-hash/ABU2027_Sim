@@ -9,6 +9,7 @@ br_decision_tr_node, br_decision_br_nodeをまとめて起動する。
     ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
     ros2 launch br_strategy_sim launch_simulator.py team:=blue
     ros2 launch br_strategy_sim launch_simulator.py enable_decision:=false
+    ros2 launch br_strategy_sim launch_simulator.py enable_decision:=false enable_teleop:=true
 """
 
 from launch import LaunchDescription
@@ -27,12 +28,17 @@ def generate_launch_description():
     # false にすると br_decision_tr_node / br_decision_br_node を起動しない
     # (手動でcmd_vel等をpublishして単体動作を確認したい場合向け)
     enable_decision_arg = DeclareLaunchArgument('enable_decision', default_value='true')
+    # true にすると br_teleop_node (キーボード手動操縦コンソール) を起動する。
+    # enable_decision:=false と組み合わせて、意思決定ノードの代わりに
+    # 手動でTR/BRを動かす用途を想定
+    enable_teleop_arg = DeclareLaunchArgument('enable_teleop', default_value='false')
 
     return LaunchDescription([
         observation_noise_arg,
         team_arg,
         screenshot_path_arg,
         enable_decision_arg,
+        enable_teleop_arg,
         Node(package='br_strategy_sim', executable='br_sim_bridge_node', name='br_sim_bridge_node'),
         Node(
             package='br_strategy_sim',
@@ -63,5 +69,11 @@ def generate_launch_description():
             executable='br_decision_br_node',
             name='br_decision_br_node',
             condition=IfCondition(LaunchConfiguration('enable_decision')),
+        ),
+        Node(
+            package='br_strategy_sim',
+            executable='br_teleop_node',
+            name='br_teleop_node',
+            condition=IfCondition(LaunchConfiguration('enable_teleop')),
         ),
     ])
