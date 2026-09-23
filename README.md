@@ -104,14 +104,18 @@ python3に正しくインストールされる。
 | キー | 動作 |
 |---|---|
 | Tab | 操作対象をTR/BRで切替 |
-| W/A/S/D | 対象ロボットをフィールド座標(u,v)で移動（押している間だけ） |
-| Space | 対象ロボットのグリッパー開閉をトグル |
+| W/A/S/D | 対象ロボットをフィールド座標(u,v)で移動（押している間だけ、Shift併用で低速・精密移動） |
+| Q / E | 把持対象候補（距離順）の選択を前/次に切替 |
+| Space | 選択中の対象を把持 / 保持中のものを解放（トグル） |
+| Z / X | 建築スポットの選択を前/次に切替 |
+| 1/2/3/4 | 選択中の建築スポットへBuildActionを送信（PLACE_EARTH_BLOCK/PLACE_SKY_BLOCK/FLIP_SKY_BLOCK/PLACE_MUSTIKA） |
 | Esc | 終了 |
 
-TR/BRいずれも既存のトピック契約（`/tr_cmd_vel`等）へpublishするだけなので、
+コンソールには自機位置・保持ブロック・把持候補一覧（距離とレンジ内/外）・
+現在の得点をテキストHUDで表示する。TR/BRいずれも既存のトピック契約
+（`/tr_cmd_vel`・`/br_build_action`等）へpublishするだけなので、
 sim_bridge_node側の変更は不要（自律ノードの代わりに同じトピックへ
-publishすれば操縦元を差し替えられる設計）。初回実装は移動とグリッパー
-開閉のみで、BuildAction（手動での建築）は未対応。
+publishすれば操縦元を差し替えられる設計）。
 
 **注意**: 起動から既定の3分（`match_duration_sec`、9.1試合時間）を過ぎると
 `sim_bridge_node`が以後の全てのcmd_vel/gripper指令を無視するようになる

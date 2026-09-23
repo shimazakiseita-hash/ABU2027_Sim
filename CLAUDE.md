@@ -104,9 +104,11 @@ end-to-endループを確認済み（headless実行、正常完走時`/score/red
     マシン（複数の建築スポットへのアース2段+スカイ1段の完成塔を順に構築した後、
     秘蹟の要件を満たしてムスティカを回収・中央支柱へ設置するところまで）
   - `br_teleop_node` — キーボード手動操縦コンソール（デバッグ用、`enable_teleop:=true`
-    で起動。意思決定ノードと同じ`/*_cmd_vel`・`/*_gripper_cmd`へpublishするだけの
-    実装なので、sim_bridge_node側は無改造で操縦元を差し替えられる。移動と
-    グリッパー開閉のみ対応、BuildActionによる手動建築は未対応)
+    で起動。意思決定ノードと同じ`/*_cmd_vel`・`/*_gripper_cmd`・`/br_build_action`へ
+    publishするだけの実装なので、sim_bridge_node側は無改造で操縦元を差し替えられる。
+    移動・把持対象のねらい撃ち（距離順候補からQ/Eで選択）・手動建築（Z/Xで建築
+    スポット選択、1-4でBuildAction送信）に対応。自機位置・保持ブロック・把持候補・
+    得点をテキストHUDで表示。キー操作の詳細はREADME.md参照)
   - `physics_blocks.py` / `robot_body.py` / `field_constants.py` /
     `field_drawing.py` / `decision_common.py` — 共通ロジック・定数・描画
 
@@ -151,3 +153,12 @@ line**"）とフィールド寸法図（ユーザー提供画像）の両方で�
   問題ない（詳細はREADME.md参照）。一度誤った状態でconfigureすると
   `build/`/`install/`にキャッシュが残るため、症状が出たら該当パッケージの
   `build/`/`install/`を削除してからやり直すこと。
+- `rclpy.init()`/ROS2ノード構築後に`pygame.init()`を呼ぶと、この環境では
+  オーディオサブシステムの初期化が数十秒〜90秒程度ブロックし、その直後に
+  rclpyのグローバルコンテキストが無効化される（それ以降のノード構築・
+  publisher作成が`NotInitializedException`/`RCLError`で失敗する）事象を
+  確認済み。pygameを使う各ノード（`br_teleop_node`, `br_visualizer_node`）は
+  音声を使わないため、`pygame.init()`ではなく`pygame.display.init()` +
+  `pygame.font.init()`など必要なサブシステムのみを個別初期化することで回避
+  できる（`br_teleop_node`は対応済み。`br_visualizer_node`は同種の
+  `pygame.init()`呼び出しが残っているため、同じ症状が出たら同様に直すこと）。
