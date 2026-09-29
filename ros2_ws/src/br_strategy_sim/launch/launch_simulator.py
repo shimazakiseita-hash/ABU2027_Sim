@@ -68,7 +68,10 @@ def generate_launch_description():
             package='br_strategy_sim',
             executable='br_visualizer_node',
             name='br_visualizer_node',
-            parameters=[{'screenshot_path': LaunchConfiguration('screenshot_path')}],
+            parameters=[{
+                'screenshot_path': LaunchConfiguration('screenshot_path'),
+                'team': LaunchConfiguration('team'),
+            }],
         ),
         Node(
             package='br_strategy_sim',

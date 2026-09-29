@@ -25,7 +25,7 @@ from br_strategy_sim import field_drawing as fd
 
 def main():
     pygame.init()
-    font = pygame.font.SysFont(None, 16)
+    font = fd.load_font(12)
     screen = pygame.display.set_mode((fd.WINDOW_SIZE, fd.WINDOW_SIZE))
     pygame.display.set_caption("ABU Robocon 2027 BR Strategy Sim")
 
@@ -39,6 +39,7 @@ def main():
                 running = False
 
         fd.draw_static_field(screen, font)
+        fd.draw_field_labels(screen, font)
         pygame.display.flip()
 
         if headless:

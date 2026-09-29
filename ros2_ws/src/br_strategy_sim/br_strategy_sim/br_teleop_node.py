@@ -33,7 +33,6 @@ publishすれば手動操縦に差し替えられる)。状態表示のための
 from __future__ import annotations
 
 import math
-import os
 import time
 from dataclasses import dataclass
 from typing import Callable
@@ -47,6 +46,7 @@ from std_msgs.msg import Bool, Int32
 from br_msgs.msg import BuildAction, DetectedBlockArray, DetectedMustika, GripperCmd, TowerArray
 
 from . import field_constants as fc
+from . import field_drawing as fd
 from .decision_common import CRUISE_SPEED_M_S, block_arrival_threshold_mm
 
 CONTROL_HZ = 20.0
@@ -98,17 +98,6 @@ _KEY_TO_BUTTON = {
     pygame.K_3: 'mustika',
 }
 
-# pygameの既定フォントは日本語グリフを持たないため日本語フォントを探す。
-# WSL環境ではLinux側に日本語フォントが無いことが多いので、Windows側のフォントも候補にする
-_JP_FONT_NAMES = ('notosanscjkjp', 'notosansjp', 'notosanscjk', 'ipaexgothic', 'ipagothic',
-                  'takaogothic', 'bizudgothic', 'meiryo')
-_JP_FONT_FILES = (
-    '/mnt/c/Windows/Fonts/BIZ-UDGothicR.ttc',
-    '/mnt/c/Windows/Fonts/meiryo.ttc',
-    '/mnt/c/Windows/Fonts/YuGothM.ttc',
-    '/mnt/c/Windows/Fonts/msgothic.ttc',
-)
-
 _BG = (24, 26, 32)
 _PANEL = (36, 39, 48)
 _BTN = (56, 60, 72)
@@ -124,14 +113,6 @@ _MSG_INFO = (32, 62, 104)
 _MSG_OK = (30, 92, 56)
 _MSG_WARN = (120, 74, 22)
 _TEAM_COLOR = {fc.TeamColor.RED: (225, 85, 85), fc.TeamColor.BLUE: (85, 135, 235)}
-
-
-def _find_japanese_font() -> str | None:
-    for name in _JP_FONT_NAMES:
-        path = pygame.font.match_font(name)
-        if path:
-            return path
-    return next((p for p in _JP_FONT_FILES if os.path.exists(p)), None)
 
 
 def _block_name(block_id: str, block_type: str, top_color: str = '', short: bool = False) -> str:
@@ -188,7 +169,7 @@ class BrTeleopNode(Node):
         # 個別に初期化してこれを回避する。
         pygame.display.init()
         pygame.font.init()
-        font_path = _find_japanese_font()
+        font_path = fd.find_japanese_font()
         if font_path is None:
             self.get_logger().warn(
                 '日本語フォントが見つからないため文字化けします。'
