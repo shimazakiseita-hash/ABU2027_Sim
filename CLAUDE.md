@@ -106,9 +106,10 @@ end-to-endループを確認済み（headless実行、正常完走時`/score/red
   - `br_teleop_node` — キーボード手動操縦コンソール（デバッグ用、`enable_teleop:=true`
     で起動。意思決定ノードと同じ`/*_cmd_vel`・`/*_gripper_cmd`・`/br_build_action`へ
     publishするだけの実装なので、sim_bridge_node側は無改造で操縦元を差し替えられる。
-    移動・把持対象のねらい撃ち（距離順候補からQ/Eで選択）・手動建築（Z/Xで建築
-    スポット選択、1-4でBuildAction送信）に対応。自機位置・保持ブロック・把持候補・
-    得点をテキストHUDで表示。キー操作の詳細はREADME.md参照)
+    ソフトに詳しくないメンバーも使えるよう日本語のボタンUIとし、「次にすること」の
+    案内・操作結果の通知・今押しても意味のないボタンの無効化(理由表示)を行う。
+    キー操作は全てマウスクリックでも可能。
+    キー操作の詳細はREADME.md参照)
   - `physics_blocks.py` / `robot_body.py` / `field_constants.py` /
     `field_drawing.py` / `decision_common.py` — 共通ロジック・定数・描画
 
