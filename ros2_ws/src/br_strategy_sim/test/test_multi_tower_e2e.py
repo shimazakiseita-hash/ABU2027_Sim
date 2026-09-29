@@ -4,8 +4,13 @@
 TRがストレージのアース2個・共用エリアのスカイ1個を受渡しエリア経由でBRに
 届け、BRがBUILD_SPOT_PLAN(現状L1・L2に1本ずつ)に完成塔を組む一連の流れを、
 秘蹟の要件(Sanctuary Mandate)を満たしたムスティカの回収・中央支柱への設置
-まで含めて確認する。実時間で2分前後かかる(意思決定ロジックが実際に
+まで含めて確認する。実時間で5分前後かかる(意思決定ロジックが実際に
 ロボットを動かして最後まで通す想定のため、早送りはしない)。
+
+フィールドを公式図の配置(ストレージがスタートゾーンと反対側の辺、受渡しエリアが
+L1の外側)にしてからは移動距離が延び、現在の巡航速度(decision_common.
+CRUISE_SPEED_M_S)では試合時間3分に収まらない。このテストは意思決定ロジックが
+最後まで通ることの確認が目的なので、試合時間を延ばして実行する。
 
 既知の不具合(要調整、CLAUDE.md「既知の残課題」参照): 受渡しエリア内で
 BRに回収されず待機しているブロックが、TR/BRの物理的な出入りでエリア境界の
@@ -22,17 +27,21 @@ from __future__ import annotations
 import rclpy
 from std_msgs.msg import Int32
 
+from br_strategy_sim import field_constants as fc
 from br_strategy_sim.br_decision_br_node import BrState
 from br_strategy_sim.br_decision_tr_node import TrState
 
 from ._sim_harness import sim_harness
 
-TIMEOUT_S = 200.0
+TIMEOUT_S = 700.0
+MATCH_DURATION_SEC = 1000.0
 # 塔2本(210点) + 受渡し点6個x5点(30点) + ムスティカ奉納(250点) = 490点
 EXPECTED_FINAL_SCORE = 490
 
 
-def test_multi_tower_and_mustika_reach_expected_score():
+def test_multi_tower_and_mustika_reach_expected_score(monkeypatch):
+    monkeypatch.setattr(fc, 'MATCH_DURATION_SEC', MATCH_DURATION_SEC)
+
     with sim_harness(enable_decision=True) as harness:
         scores = {'red': 0}
         watcher = rclpy.create_node('score_watcher')

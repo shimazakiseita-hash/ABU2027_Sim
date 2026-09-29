@@ -110,7 +110,10 @@ ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
 - 6.1 押出し禁止：ロボットはブロックを持ち上げるか運搬しなければならない。
   床面上を押す・引きずる・滑らせて移動させる行為は禁止 → `violation`(forced_retry=true)
 - 6.2.1 区域違反(TR)：TRのいずれかの部分が受渡しエリアを越えてL1/L2の
-  鉛直境界内へ入ること → `violation`(forced_retry=true)
+  鉛直境界内へ入ること → `violation`(forced_retry=true)。受渡しエリアはL1の外に
+  張り出した区画なので、TRはL1に入らずに受渡しできる。TRの意思決定ノードは
+  L1を横切る直進経路を避け、L1の角の外側を回り込む
+  (`decision_common.tr_route_waypoint`)
 - 6.2.2 区域違反(相手専用区域)：ロボットのいずれかの部分が相手の専用区域
   （スタートゾーン、ストレージエリア、非共用のL1建築スポット/受渡しエリア）へ
   入ること → `violation`(forced_retry=true)。実装上は相手側スタートゾーン・
@@ -158,10 +161,9 @@ ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
     完成塔2つを満たすまでTRはムスティカを回収できない。
     `decision_common.sanctuary_mandate_satisfied()`で判定し、TR側の意思決定
     ステートマシン（WAIT_SANCTUARY_MANDATE状態）が`/detected_towers`を見て
-    判定・強制する。共有エリア＝L2（ルールブック上「全体が共用エリア」）を
-    含む塔があるかで判定する簡易実装（L1内の一部共有エリアは
-    field_constants.BUILD_SPOTSの割り当てにまだ反映していないため対象外。
-    要調整）
+    判定・強制する。共有エリアの塔＝L2（ルールブック上「全体が共用エリア」）の
+    塔、またはL1中央線上の共用建築スポット（field_constants.BUILD_SPOTSで
+    team=""）の塔
 
 ### 受渡し違反と建築設置の区別
 

@@ -43,12 +43,14 @@ from br_msgs.msg import DetectedBlockArray, DetectedMustika, GripperCmd, TowerAr
 
 from . import field_constants as fc
 from .decision_common import (
+    ARRIVAL_THRESHOLD_MM,
     TRANSFER_POINT_ARRIVAL_THRESHOLD_MM,
     block_arrival_threshold_mm,
     drive_toward,
     point_in_rect,
     sanctuary_mandate_satisfied,
     transfer_area_rect,
+    tr_route_waypoint,
     tr_transfer_release_point,
 )
 
@@ -71,6 +73,8 @@ _SHARED_AREA_CENTER = (
     fc.GROUND_SHARED_AREA_ORIGIN[1] + fc.GROUND_SHARED_AREA_SIZE[1] / 2,
 )
 _SOURCE_AREA_CENTER_BY_TYPE = {'earth': _STORAGE_AREA_CENTER, 'sky': _SHARED_AREA_CENTER}
+# ストレージから押し出されたブロックも拾えるよう、ストレージエリアを少し広げて探す
+_STORAGE_PICKUP_MARGIN_MM = 1000.0
 
 # 塔の構成順(アース2段->スカイ1段)を、建てる塔の数だけ繰り返す。
 # br_decision_br_node.BUILD_SEQUENCE * len(BUILD_SPOT_PLAN)と対応させること
@@ -177,12 +181,17 @@ class BrDecisionTrNode(Node):
             if not point_in_rect(b.position.x, b.position.y, transfer_origin, transfer_size)
         ]
         if block_type == 'earth':
-            # ストレージ付近(u座標がこの範囲内)のブロックだけを対象にする。
-            # 受渡しエリア除外だけでは、受渡しエリアに向かう/そこから離れる
-            # 途中の座標(まだエリア外)にあるブロックまでは弾けないため、
-            # earthについては引き続きこちらも併用する。
-            storage_u_max = fc.TRANSFER_AREA_ORIGIN[0] - 200.0
-            candidates = [b for b in candidates if b.position.x <= storage_u_max]
+            # ストレージ付近(ストレージエリアから_STORAGE_PICKUP_MARGIN_MM以内)の
+            # ブロックだけを対象にする。受渡しエリア除外だけでは、受渡しエリアに
+            # 向かう/そこから離れる途中の座標(まだエリア外)にあるブロックまでは
+            # 弾けないため、earthについては引き続きこちらも併用する。
+            m = _STORAGE_PICKUP_MARGIN_MM
+            candidates = [
+                b for b in candidates
+                if point_in_rect(b.position.x, b.position.y,
+                                 (fc.STORAGE_AREA_ORIGIN[0] - m, fc.STORAGE_AREA_ORIGIN[1] - m),
+                                 (fc.STORAGE_AREA_SIZE[0] + 2 * m, fc.STORAGE_AREA_SIZE[1] + 2 * m))
+            ]
         elif block_type == 'sky':
             # 自チームの色が上を向いている個体だけを対象にする(得点はowner_team
             # ではなく上面色で決まるため。8.3.2/OWN_TEAM参照)
@@ -190,6 +199,14 @@ class BrDecisionTrNode(Node):
         if not candidates:
             return None
         return min(candidates, key=lambda b: math.hypot(b.position.x - cur[0], b.position.y - cur[1]))
+
+    def _drive_on_ground(self, target_uv, arrival_threshold_mm: float = ARRIVAL_THRESHOLD_MM):
+        """drive_towardと同じだが、直進するとL1を横切る場合はL1の角の外側を回り込む(6.2.1)。"""
+        waypoint = tr_route_waypoint(self._current_uv(), target_uv)
+        if waypoint != target_uv:
+            twist, _arrived = drive_toward(self._current_uv(), waypoint)
+            return twist, False
+        return drive_toward(self._current_uv(), target_uv, arrival_threshold_mm=arrival_threshold_mm)
 
     def _tick(self) -> None:
         if self._pose is None:
@@ -209,14 +226,12 @@ class BrDecisionTrNode(Node):
                     # 視野内(2000mm圏)に対象種別のブロックが無い場合は、
                     # 具体的な目標が見えるまで供給元エリア全体の方向へ
                     # 大まかに寄る(何もせず待つと視野に入らず永久に停止してしまう)
-                    twist, _arrived = drive_toward(self._current_uv(), _SOURCE_AREA_CENTER_BY_TYPE[delivery_type])
+                    twist, _arrived = self._drive_on_ground(_SOURCE_AREA_CENTER_BY_TYPE[delivery_type])
                     self.pub_cmd_vel.publish(twist)
                     return
                 self._target_block_id = target.id
-            twist, arrived = drive_toward(
-                self._current_uv(), (target.position.x, target.position.y),
-                arrival_threshold_mm=threshold,
-            )
+            twist, arrived = self._drive_on_ground(
+                (target.position.x, target.position.y), arrival_threshold_mm=threshold)
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = TrState.GRASP_EARTH_BLOCK
@@ -247,10 +262,8 @@ class BrDecisionTrNode(Node):
         elif self._state == TrState.APPROACH_TRANSFER_AREA:
             self.pub_gripper.publish(GripperCmd(
                 open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
-            twist, arrived = drive_toward(
-                self._current_uv(), tr_transfer_release_point(),
-                arrival_threshold_mm=TRANSFER_POINT_ARRIVAL_THRESHOLD_MM,
-            )
+            twist, arrived = self._drive_on_ground(
+                tr_transfer_release_point(), arrival_threshold_mm=TRANSFER_POINT_ARRIVAL_THRESHOLD_MM)
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = TrState.RELEASE_IN_TRANSFER
@@ -284,13 +297,12 @@ class BrDecisionTrNode(Node):
                 # まだ視野(2000mm圏)に入っていない場合は、開始位置(中央支柱脇の
                 # ムスティカ柱)付近へ大まかに寄る(何もせず待つと視野に入らず
                 # 永久に停止してしまう。GRASP_EARTH_BLOCK系と同じ考え方)
-                twist, _arrived = drive_toward(self._current_uv(), fc.MUSTIKA_PILLAR_ORIGIN)
+                twist, _arrived = self._drive_on_ground(fc.MUSTIKA_PILLAR_ORIGIN)
                 self.pub_cmd_vel.publish(twist)
                 return
-            twist, arrived = drive_toward(
-                self._current_uv(), (self._mustika.position.x, self._mustika.position.y),
-                arrival_threshold_mm=_MUSTIKA_ARRIVAL_THRESHOLD_MM,
-            )
+            twist, arrived = self._drive_on_ground(
+                (self._mustika.position.x, self._mustika.position.y),
+                arrival_threshold_mm=_MUSTIKA_ARRIVAL_THRESHOLD_MM)
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = TrState.GRASP_MUSTIKA

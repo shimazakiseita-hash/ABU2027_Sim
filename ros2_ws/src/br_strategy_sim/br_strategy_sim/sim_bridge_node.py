@@ -82,18 +82,14 @@ START_SPAWN_GAP_MM = 200.0
 # 発生・550〜600mmで安定を確認済み。500mmは両者の間だが、ブロック辺同士の
 # 隙間(500-350=150mm)は380mm時の隙間(30mm)よりずっと広いため安全に
 # 倒せる値として採用)。
-# STORAGE_AREA_SIZE(長辺2000mm=U方向, 短辺1000mm=V方向)に合わせ、4列×5行
-# (20個ちょうど)に配置する。この配置は次の3つの隣接エリアに全方向を
-# 囲まれた状態になる: 受渡しエリア(u>=3250)、L1建築スポットl1_red_1
-# (u,v: 2500〜3000)、ムスティカ柱(2000,2000)。ピッチ600/550(元の値)では
-# 20個の広がりがどうしてもいずれかに接近しすぎ、統合テストでBR/TRの往復時に
-# 縁のブロックを弾き飛ばして受渡しエリアへ誤って迷い込ませる事故が発生した
-# (スコアが本来の460から465になる/受渡し待ちが永久に成立しないまま停止する、
-# の2パターンで再現)。ピッチを500に詰めることでU方向1500mm・V方向2000mmまで
-# 縮小し、受渡しエリアまで575mm・L1スポットまで325mmの余裕を確保する。
+# ストレージエリアはフィールド外周(V=11000)の辺に接しているため、格子はその辺から
+# フィールドの内側(-V方向)へ向かって並べる(+V方向に並べるとフィールド外にはみ出し、
+# 開始直後に6.4場外として取り除かれてしまう)。5列×4行(20個ちょうど)で、U方向は
+# ストレージの長辺2000mmにほぼ収まり、V方向は奥行き1000mmから少しはみ出す
+# (2Dシムでは積み重ね(最大2段)を表現できないため、平置きで並べる)。
 STORAGE_BLOCK_PITCH_U_MM = 500.0
 STORAGE_BLOCK_PITCH_V_MM = 500.0
-STORAGE_BLOCK_COLS = 4
+STORAGE_BLOCK_COLS = 5
 
 
 def _spawn_storage_earth_blocks(space: pymunk.Space) -> list[PhysicsBlock]:
@@ -103,7 +99,8 @@ def _spawn_storage_earth_blocks(space: pymunk.Space) -> list[PhysicsBlock]:
         col = i % STORAGE_BLOCK_COLS
         row = i // STORAGE_BLOCK_COLS
         u = fc.STORAGE_AREA_ORIGIN[0] + fc.EARTH_BLOCK_SIZE / 2 + col * STORAGE_BLOCK_PITCH_U_MM
-        v = fc.STORAGE_AREA_ORIGIN[1] + fc.EARTH_BLOCK_SIZE / 2 + row * STORAGE_BLOCK_PITCH_V_MM
+        v = (fc.STORAGE_AREA_ORIGIN[1] + fc.STORAGE_AREA_SIZE[1]
+             - fc.EARTH_BLOCK_SIZE / 2 - row * STORAGE_BLOCK_PITCH_V_MM)
         blocks.append(make_earth_block(space, f'earth_red_{i:02d}', (u, v), LEVEL_GROUND, fc.TeamColor.RED))
     return blocks
 

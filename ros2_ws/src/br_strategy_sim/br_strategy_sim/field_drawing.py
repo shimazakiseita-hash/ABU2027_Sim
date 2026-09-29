@@ -41,6 +41,12 @@ COLOR_BUILD_SPOT = (40, 100, 50)
 COLOR_PILLAR = (100, 62, 0)
 COLOR_BOUNDARY = (100, 62, 0)
 COLOR_TRANSFER = {fc.TeamColor.RED: (245, 170, 60), fc.TeamColor.BLUE: (60, 170, 245)}
+COLOR_RAMP = {fc.TeamColor.RED: (200, 150, 140), fc.TeamColor.BLUE: (130, 180, 200)}
+# 階段(L1/L2とも)は公式にはその段のL1と同じ色。段の境目が見えるよう線を引く
+COLOR_STAIRS = COLOR_L1
+COLOR_STAIR_EDGE = (120, 110, 105)
+COLOR_RETRY = {fc.TeamColor.RED: COLOR_START, fc.TeamColor.BLUE: COLOR_START_BLUE}
+COLOR_SPOT_SHARED_EDGE = (150, 150, 150)
 
 # 動的要素(競技物・ロボット)の描画色。アース/スカイの赤青は公式ルールブック
 # 14章のGame Objects表と同じ値(Start Zoneの赤青とも同色)。
@@ -59,7 +65,7 @@ COLOR_ROBOT_ARROW = (240, 240, 240)
 COLOR_GRIPPER_OPEN = (215, 215, 215)
 COLOR_GRIPPER_CLOSED = (245, 170, 40)
 
-_TEAM_NAMES = {fc.TeamColor.RED: '赤', fc.TeamColor.BLUE: '青'}
+_TEAM_NAMES = {fc.TeamColor.RED: '赤', fc.TeamColor.BLUE: '青', '': '共用'}
 
 # pygameの既定フォントは日本語グリフを持たないため日本語フォントを探す。
 # WSL環境ではLinux側に日本語フォントが無いことが多いので、Windows側のフォントも候補にする
@@ -131,8 +137,41 @@ def spot_short_name(spot_id: str, level: int, team: str) -> str:
     return f'L{level}{_TEAM_NAMES.get(team, team)}{spot_id.rsplit("_", 1)[-1]}'
 
 
+def _both_sides(origin, size):
+    """赤側の矩形と、それを青側へ鏡映した矩形を(チーム, 原点)の組で返す。"""
+    return ((fc.TeamColor.RED, origin), (fc.TeamColor.BLUE, fc.mirror_rect_origin(origin, size)))
+
+
+def _draw_stairs(surface, color, origin, size, steps, along_u):
+    draw_rect_mm(surface, color, origin, size)
+    for i in range(1, steps):
+        if along_u:
+            u = origin[0] + size[0] * i / steps
+            a, b = mm_to_px(u, origin[1]), mm_to_px(u, origin[1] + size[1])
+        else:
+            v = origin[1] + size[1] * i / steps
+            a, b = mm_to_px(origin[0], v), mm_to_px(origin[0] + size[0], v)
+        pygame.draw.line(surface, COLOR_STAIR_EDGE, a, b, 1)
+    draw_rect_mm(surface, COLOR_STAIR_EDGE, origin, size, width=1)
+
+
+def _draw_center_divider(surface):
+    """中央の仕切り(グラウンドとL1の中心線)。L2と、中央線上の共用エリアの部分は途切れる。"""
+    gaps = [
+        (fc.GROUND_SHARED_AREA_ORIGIN[1], fc.GROUND_SHARED_AREA_ORIGIN[1] + fc.GROUND_SHARED_AREA_SIZE[1]),
+        (fc.L2_ORIGIN[1], fc.L2_ORIGIN[1] + fc.L2_SIZE),
+        (fc.MUSTIKA_SHARED_AREA_ORIGIN[1], fc.MUSTIKA_SHARED_AREA_ORIGIN[1] + fc.MUSTIKA_SHARED_AREA_SIZE[1]),
+        *((o[1], o[1] + fc.L1_SHARED_AREA_SIZE[1]) for o in fc.L1_SHARED_AREA_ORIGINS),
+    ]
+    v = 0.0
+    for start, end in sorted(gaps) + [(fc.GAME_FIELD_SIZE, fc.GAME_FIELD_SIZE)]:
+        if start > v:
+            pygame.draw.line(surface, COLOR_BOUNDARY, mm_to_px(fc.FIELD_CENTER, v), mm_to_px(fc.FIELD_CENTER, start), 3)
+        v = max(v, end)
+
+
 def draw_static_field(surface, font):
-    """フィールドの静的要素(床の塗り分け・段差・建築スポット・柱・仕切り)を描く。文字はdraw_field_labelsで別に描く。"""
+    """フィールドの静的要素(床の塗り分け・段差・階段・建築スポット・柱・仕切り)を描く。文字はdraw_field_labelsで別に描く。"""
     surface.fill(COLOR_BG)
     half = fc.FIELD_CENTER
 
@@ -140,12 +179,14 @@ def draw_static_field(surface, font):
     draw_rect_mm(surface, COLOR_GROUND[fc.TeamColor.RED], (0, 0), (half, fc.GAME_FIELD_SIZE))
     draw_rect_mm(surface, COLOR_GROUND[fc.TeamColor.BLUE], (half, 0), (half, fc.GAME_FIELD_SIZE))
 
-    for team, origin in ((fc.TeamColor.RED, fc.STORAGE_AREA_ORIGIN),
-                         (fc.TeamColor.BLUE, fc.mirror_rect_origin(fc.STORAGE_AREA_ORIGIN, fc.STORAGE_AREA_SIZE))):
+    for team, origin in _both_sides(fc.STORAGE_AREA_ORIGIN, fc.STORAGE_AREA_SIZE):
         draw_rect_mm(surface, COLOR_STORAGE_EDGE[team], origin, fc.STORAGE_AREA_SIZE, width=2)
-    for origin in (fc.START_ZONE_1_ORIGIN, fc.START_ZONE_2_ORIGIN):
-        draw_rect_mm(surface, COLOR_START, origin, fc.START_ZONE_SIZE)
-        draw_rect_mm(surface, COLOR_START_BLUE, fc.mirror_rect_origin(origin, fc.START_ZONE_SIZE), fc.START_ZONE_SIZE)
+    for zone in (fc.START_ZONE_1_ORIGIN, fc.START_ZONE_2_ORIGIN):
+        for team, origin in _both_sides(zone, fc.START_ZONE_SIZE):
+            draw_rect_mm(surface, COLOR_TEAM[team], origin, fc.START_ZONE_SIZE)
+
+    draw_rect_mm(surface, COLOR_SHARED, fc.GROUND_SHARED_AREA_ORIGIN, fc.GROUND_SHARED_AREA_SIZE)
+    draw_rect_mm(surface, COLOR_SHARED, fc.MUSTIKA_SHARED_AREA_ORIGIN, fc.MUSTIKA_SHARED_AREA_SIZE)
 
     # L1(中央線で赤/青に塗り分け、外周に柵)
     l1_red_width = half - fc.L1_ORIGIN[0]
@@ -153,56 +194,62 @@ def draw_static_field(surface, font):
     draw_rect_mm(surface, COLOR_L1[fc.TeamColor.BLUE], (half, fc.L1_ORIGIN[1]),
                  (fc.L1_SIZE - l1_red_width, fc.L1_SIZE))
     draw_rect_mm(surface, COLOR_L1_BARRIER, fc.L1_ORIGIN, (fc.L1_SIZE, fc.L1_SIZE), width=4)
+    for origin in fc.L1_SHARED_AREA_ORIGINS:
+        draw_rect_mm(surface, COLOR_SHARED, origin, fc.L1_SHARED_AREA_SIZE)
+    for team, origin in _both_sides(fc.L1_RETRY_ZONE_ORIGIN, fc.L1_RETRY_ZONE_SIZE):
+        draw_rect_mm(surface, COLOR_RETRY[team], origin, fc.L1_RETRY_ZONE_SIZE)
 
-    for team, origin in ((fc.TeamColor.RED, fc.TRANSFER_AREA_ORIGIN),
-                         (fc.TeamColor.BLUE, fc.mirror_rect_origin(fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE))):
+    # L1の外側: スロープ -> 踊り場 -> 受渡しエリア -> 階段
+    for team, origin in _both_sides(fc.RAMP_ORIGIN, fc.RAMP_SIZE):
+        draw_rect_mm(surface, COLOR_RAMP[team], origin, fc.RAMP_SIZE)
+    for team, origin in _both_sides(fc.RAMP_LANDING_ORIGIN, fc.RAMP_LANDING_SIZE):
+        draw_rect_mm(surface, COLOR_STAIRS[team], origin, fc.RAMP_LANDING_SIZE)
+    for team, origin in _both_sides(fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE):
         draw_rect_mm(surface, COLOR_TRANSFER[team], origin, fc.TRANSFER_AREA_SIZE)
+    for team, origin in _both_sides(fc.L1_STAIRS_ORIGIN, fc.L1_STAIRS_SIZE):
+        _draw_stairs(surface, COLOR_STAIRS[team], origin, fc.L1_STAIRS_SIZE, fc.L1_STAIR_STEP_COUNT, along_u=False)
 
-    # L2
+    # L2とL1->L2の階段
     draw_rect_mm(surface, COLOR_L2, fc.L2_ORIGIN, (fc.L2_SIZE, fc.L2_SIZE))
     draw_rect_mm(surface, COLOR_L2_EDGE, fc.L2_ORIGIN, (fc.L2_SIZE, fc.L2_SIZE), width=2)
+    for team, origin in _both_sides(fc.L2_STAIRS_ORIGIN, fc.L2_STAIRS_SIZE):
+        _draw_stairs(surface, COLOR_STAIRS[team], origin, fc.L2_STAIRS_SIZE, 1, along_u=True)
 
-    draw_rect_mm(surface, COLOR_SHARED, fc.GROUND_SHARED_AREA_ORIGIN, fc.GROUND_SHARED_AREA_SIZE)
-
-    # 建築スポット(緑)。どちらのチームのスポットかを枠の色で示す
+    # 建築スポット(緑)。どちらのチームのスポットか(共用なら灰)を枠の色で示す
     for _spot_id, _level, team, origin in fc.BUILD_SPOTS:
         draw_rect_mm(surface, COLOR_BUILD_SPOT, origin, fc.BUILD_SPOT_SIZE)
-        draw_rect_mm(surface, COLOR_TEAM.get(team, COLOR_TEXT), origin, fc.BUILD_SPOT_SIZE, width=3)
+        draw_rect_mm(surface, COLOR_TEAM.get(team, COLOR_SPOT_SHARED_EDGE), origin, fc.BUILD_SPOT_SIZE, width=3)
 
     draw_circle_mm(surface, COLOR_PILLAR, (fc.FIELD_CENTER, fc.FIELD_CENTER), fc.CENTRAL_PILLAR_DIAMETER)
     draw_circle_mm(surface, COLOR_PILLAR, fc.MUSTIKA_PILLAR_ORIGIN, fc.MUSTIKA_PILLAR_DIAMETER)
 
-    # 中央の仕切り(グラウンドとL1の中心線。L2には無い: ルールブック3章 Center Divider)
-    top, bottom = mm_to_px(half, fc.GAME_FIELD_SIZE), mm_to_px(half, 0)
-    l2_top, l2_bottom = mm_to_px(half, fc.L2_ORIGIN[1] + fc.L2_SIZE), mm_to_px(half, fc.L2_ORIGIN[1])
-    pygame.draw.line(surface, COLOR_BOUNDARY, top, l2_top, 3)
-    pygame.draw.line(surface, COLOR_BOUNDARY, l2_bottom, bottom, 3)
-
+    _draw_center_divider(surface)
     draw_rect_mm(surface, COLOR_BOUNDARY, (0, 0), (fc.GAME_FIELD_SIZE, fc.GAME_FIELD_SIZE), width=4)
 
 
 def draw_field_labels(surface, font):
     """エリア名・建築スポット名のラベル。競技物やロボットに隠れないよう最後に重ねて描く。"""
     margin = fc.BUILD_SPOT_SIZE[0] + 150
-    draw_label(surface, font, 'L1', (fc.L1_ORIGIN[0] + margin, fc.L1_ORIGIN[1] + fc.L1_SIZE), offset=(0, 4))
+    draw_label(surface, font, 'L1', (fc.L1_ORIGIN[0] + margin, fc.L1_ORIGIN[1]), anchor='bottomleft', offset=(0, -4))
     draw_label(surface, font, 'L2', (fc.L2_ORIGIN[0] + margin, fc.L2_ORIGIN[1] + fc.L2_SIZE), offset=(0, 4))
-    draw_label(surface, font, 'ストレージ', (fc.STORAGE_AREA_ORIGIN[0], fc.STORAGE_AREA_ORIGIN[1] + fc.STORAGE_AREA_SIZE[1]),
-               anchor='bottomleft', offset=(0, -2))
-    blue_storage = fc.mirror_rect_origin(fc.STORAGE_AREA_ORIGIN, fc.STORAGE_AREA_SIZE)
-    draw_label(surface, font, 'ストレージ', (blue_storage[0], blue_storage[1] + fc.STORAGE_AREA_SIZE[1]),
-               anchor='bottomleft', offset=(0, -2))
-    for origin in (fc.TRANSFER_AREA_ORIGIN, fc.mirror_rect_origin(fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE)):
-        draw_label(surface, font, '受渡し', origin, offset=(0, 2))
+    for _team, origin in _both_sides(fc.STORAGE_AREA_ORIGIN, fc.STORAGE_AREA_SIZE):
+        draw_label(surface, font, 'ストレージ', origin, anchor='bottomleft', offset=(4, -4))
+    for text, origin, size in (('受渡し', fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE),
+                               ('スロープ', fc.RAMP_ORIGIN, fc.RAMP_SIZE),
+                               ('リトライ', fc.L1_RETRY_ZONE_ORIGIN, fc.L1_RETRY_ZONE_SIZE)):
+        for _team, o in _both_sides(origin, size):
+            draw_label(surface, font, text, (o[0] + size[0] / 2, o[1] + size[1] / 2), anchor='center')
     draw_label(surface, font, 'スカイ置き場', fc.GROUND_SHARED_AREA_ORIGIN, offset=(0, 2))
     draw_label(surface, font, '中央の柱', (fc.FIELD_CENTER, fc.FIELD_CENTER), anchor='midtop',
                offset=(0, fc.CENTRAL_PILLAR_DIAMETER / 2 * SCALE + 2))
     draw_label(surface, font, 'ムスティカ台', fc.MUSTIKA_PILLAR_ORIGIN, anchor='midtop',
                offset=(0, fc.MUSTIKA_PILLAR_DIAMETER / 2 * SCALE + 2))
 
-    # 建築スポット名は、スポットの外側(フィールド中心から遠い側)の上下に置く
+    # 建築スポット名は、スポットの外側(フィールド中心から遠い側)の上下に置く。
+    # 中央線上の共用スポットは外側にムスティカ台/スカイ置き場があるので内側に置く
     for spot_id, level, team, origin in fc.BUILD_SPOTS:
         cu, cv = spot_center(origin)
-        above = cv > fc.FIELD_CENTER
+        above = (cv > fc.FIELD_CENTER) != (team == '')
         edge_v = origin[1] + fc.BUILD_SPOT_SIZE[1] if above else origin[1]
         draw_label(surface, font, spot_short_name(spot_id, level, team), (cu, edge_v),
                    anchor='midbottom' if above else 'midtop', offset=(0, -2 if above else 2))

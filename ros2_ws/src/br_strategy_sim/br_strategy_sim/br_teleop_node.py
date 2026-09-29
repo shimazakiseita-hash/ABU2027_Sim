@@ -75,6 +75,7 @@ _BLOCK_HALF_SIZE_MM = {
 }
 
 _COLOR_NAMES = {fc.TeamColor.RED: '赤', fc.TeamColor.BLUE: '青'}
+_SPOT_TEAM_NAMES = {**_COLOR_NAMES, '': '共用'}
 _TYPE_NAMES = {'earth': 'アース', 'sky': 'スカイ', 'mustika': 'ムスティカ'}
 
 # 移動ボタン名 -> (キー, u方向, v方向, 表示)。field_drawing.mm_to_pxはvが増えるほど
@@ -131,7 +132,7 @@ def _block_name(block_id: str, block_type: str, top_color: str = '', short: bool
 
 
 def _spot_name(spot_id: str, level: int, team: str) -> str:
-    return f'L{level}・{_COLOR_NAMES.get(team, team)}・{spot_id.rsplit("_", 1)[-1]}番'
+    return f'L{level}・{_SPOT_TEAM_NAMES.get(team, team)}・{spot_id.rsplit("_", 1)[-1]}番'
 
 
 @dataclass

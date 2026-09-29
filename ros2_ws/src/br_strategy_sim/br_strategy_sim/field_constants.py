@@ -64,63 +64,92 @@ START_ZONE_SIZE = (700, 700)
 START_ZONE_1_ORIGIN = (0, 0)
 START_ZONE_2_ORIGIN = (700, 0)
 
-# ストレージエリア: 長辺(2000mm)がフィールド外周の辺に平行、短辺(1000mm)が
-# 内側への奥行き(公式図面の実測値に基づき確定。U軸=ストレージエリア沿いの辺
-# という座標系定義と整合させた)
+# ストレージエリア: スタートゾーンと反対側の辺(V=11000)の角に接し、長辺(2000mm)が
+# その辺に平行、短辺(1000mm)が内側への奥行き(ルールブック7・8・12ページの図)
 STORAGE_AREA_SIZE = (2000, 1000)
-STORAGE_AREA_ORIGIN = (1000, 0)
+STORAGE_AREA_ORIGIN = (0, GAME_FIELD_SIZE - STORAGE_AREA_SIZE[1])
 
 STORAGE_AREA_EARTH_BLOCK_COUNT = 20
 STORAGE_AREA_MAX_STACK = 2
 
-# グラウンド共用エリア（中央、スカイブロック5x5格子）
+# グラウンド共用エリア（スカイブロック5x5格子）: 中央線上、L1とスタートゾーン側の辺の
+# 間(ルールブック12ページの図)。V方向の位置は寸法の記載が無いため、その帯の中央に置く
 GROUND_SHARED_AREA_SIZE = (1200, 1200)
-GROUND_SHARED_AREA_ORIGIN = (FIELD_CENTER - 600, FIELD_CENTER - 600)  # 中央寄せ(暫定)
+GROUND_SHARED_AREA_ORIGIN = (FIELD_CENTER - GROUND_SHARED_AREA_SIZE[0] / 2,
+                             (L1_ORIGIN[1] - GROUND_SHARED_AREA_SIZE[1]) / 2)
 
 SKY_BLOCK_GRID_ROWS = 5
 SKY_BLOCK_GRID_COLS = 5
 SKY_BLOCK_COUNT = 12  # 中央1マスを除く24マス中12個使用(市松状)
 
-# ムスティカ台周囲の共用エリア
+# ムスティカ台周囲の共用エリア: 中央線上、L1のストレージ側の辺に接する(12ページの図)
 MUSTIKA_SHARED_AREA_SIZE = (1000, 1000)
+MUSTIKA_SHARED_AREA_ORIGIN = (FIELD_CENTER - MUSTIKA_SHARED_AREA_SIZE[0] / 2, L1_ORIGIN[1] + L1_SIZE)
 
 # ムスティカ台（円柱）
 MUSTIKA_PILLAR_HEIGHT = 500
 MUSTIKA_PILLAR_DIAMETER = 270
 MUSTIKA_PILLAR_SOCKET_DIAMETER = 180
 MUSTIKA_PILLAR_SOCKET_DEPTH = 100
-# L1手前の暫定配置(draw_field_preview.py由来。正確な位置は未確定、要調整)
-MUSTIKA_PILLAR_ORIGIN = (L1_ORIGIN[0] - 500, L1_ORIGIN[1] - 500)
+# ムスティカ台はその共用エリアの中央(名前はORIGINだが円柱の中心座標)
+MUSTIKA_PILLAR_ORIGIN = (
+    MUSTIKA_SHARED_AREA_ORIGIN[0] + MUSTIKA_SHARED_AREA_SIZE[0] / 2,
+    MUSTIKA_SHARED_AREA_ORIGIN[1] + MUSTIKA_SHARED_AREA_SIZE[1] / 2,
+)
 
 
 # ============================================================
 # グラウンド -> L1 遷移構造
 # ============================================================
+# L1の外周のうちU=0側の辺の外に沿って、ストレージ側から順に
+# スロープ(3500) -> 踊り場(600) -> 受渡しエリア(1000) -> 階段3段(900) と並ぶ
+# (合計6000mm = L1の一辺。ルールブック7・8・12ページの図)。幅はいずれも1000mm。
+# スロープはストレージ側が低く、受渡しエリア側でL1の高さになる。階段は
+# スタートゾーン側に向かって下る。
 RAMP_LENGTH = 3500
 RAMP_TO_STAIRS_LANDING_WIDTH = 600
-STAIRS_SECTION_DEPTH = 1900
+STAIRS_SECTION_DEPTH = 1900  # 受渡しエリア(1000) + 階段3段(900)
 
 STAIR_STEP_LENGTH = 300   # 踏み込み
 STAIR_STEP_WIDTH = 1000
 STAIR_STEP_HEIGHT = 150
+L1_STAIR_STEP_COUNT = 3
+
+TRANSITION_WIDTH = STAIR_STEP_WIDTH
+TRANSITION_U = L1_ORIGIN[0] - TRANSITION_WIDTH  # スロープ・踊り場・受渡し・階段の共通U原点
+L1_STAIRS_ORIGIN = (TRANSITION_U, L1_ORIGIN[1])
+L1_STAIRS_SIZE = (TRANSITION_WIDTH, STAIR_STEP_LENGTH * L1_STAIR_STEP_COUNT)
+RAMP_ORIGIN = (TRANSITION_U, L1_ORIGIN[1] + L1_SIZE - RAMP_LENGTH)
+RAMP_SIZE = (TRANSITION_WIDTH, RAMP_LENGTH)
+RAMP_LANDING_ORIGIN = (TRANSITION_U, RAMP_ORIGIN[1] - RAMP_TO_STAIRS_LANDING_WIDTH)
+RAMP_LANDING_SIZE = (TRANSITION_WIDTH, RAMP_TO_STAIRS_LANDING_WIDTH)
 
 
 # ============================================================
 # L1の区画
 # ============================================================
+# 受渡しエリア: L1の外に張り出した、L1と同じ高さの区画。階段の上端とスロープの
+# 踊り場の間(上記「グラウンド -> L1 遷移構造」参照)。複数箇所(br_referee_node,
+# decision_common, field_drawing)で同じ式を重複させないよう、ここに一本化する。
 TRANSFER_AREA_SIZE = (1000, 1000)
-TRANSFER_AREA_L1_CORNER_OFFSET = 750  # L1角からのオフセット(実測値)
-# 受渡しエリアの原点。複数箇所(br_referee_node, decision_common,
-# field_drawing)で同じ式を重複させないよう、ここに一本化する。
-TRANSFER_AREA_ORIGIN = (
-    L1_ORIGIN[0] + TRANSFER_AREA_L1_CORNER_OFFSET,
-    L1_ORIGIN[1] + TRANSFER_AREA_L1_CORNER_OFFSET,
-)
+TRANSFER_AREA_ORIGIN = (TRANSITION_U, L1_STAIRS_ORIGIN[1] + L1_STAIRS_SIZE[1])
 
 BUILD_SPOT_SIZE = (500, 500)
-BUILD_SPOTS_PER_LEVEL = 4  # 四隅に1個ずつ (赤2・青2)
+# L1は四隅(赤2・青2)に加え、中央線上の共用エリア2か所にも1個ずつ(計6個)。L2は四隅の4個
+BUILD_SPOTS_PER_LEVEL = {1: 6, 2: 4}
 
+# L1共用エリア: 中央線上でL1の辺に接する1000x750mmの区画(8ページの図)。
+# 共用の建築スポットはその辺に接して中央に置かれる
+L1_SHARED_AREA_SIZE = (1000, 750)
+L1_SHARED_AREA_ORIGINS = (
+    (FIELD_CENTER - L1_SHARED_AREA_SIZE[0] / 2, L1_ORIGIN[1]),
+    (FIELD_CENTER - L1_SHARED_AREA_SIZE[0] / 2, L1_ORIGIN[1] + L1_SIZE - L1_SHARED_AREA_SIZE[1]),
+)
+
+# L1リトライゾーン: ストレージ側の辺に接し、赤専有の建築スポットの隣(12ページの図)。
+# 建築スポットとの間隔は寸法の記載が無いため250mmとしている(要調整)
 L1_RETRY_ZONE_SIZE = (700, 700)
+L1_RETRY_ZONE_ORIGIN = (L1_ORIGIN[0] + BUILD_SPOT_SIZE[0] + 250, L1_ORIGIN[1] + L1_SIZE - L1_RETRY_ZONE_SIZE[1])
 
 L1_OUTER_BARRIER_WIDTH = 650  # L1外周からフィールド外縁までの帯幅
 
@@ -132,6 +161,10 @@ CENTRAL_PILLAR_HEIGHT = 800
 CENTRAL_PILLAR_DIAMETER = 270
 CENTRAL_PILLAR_SOCKET_DIAMETER = 180
 CENTRAL_PILLAR_SOCKET_DEPTH = 100
+
+# L1->L2の階段(1段): L2のU=0側の辺の中央に接する(12ページの図)
+L2_STAIRS_ORIGIN = (L2_ORIGIN[0] - STAIR_STEP_LENGTH, FIELD_CENTER - STAIR_STEP_WIDTH / 2)
+L2_STAIRS_SIZE = (STAIR_STEP_LENGTH, STAIR_STEP_WIDTH)
 
 
 # ============================================================
@@ -207,6 +240,7 @@ def get_team_origin_offset(team: str) -> tuple[float, float]:
 # 2箇所を青専有とする。これは「赤/青分割線をU軸中央対称とする」という
 # 既知の暫定事項(CLAUDE.md参照)と同じ前提に基づく仮定。公式図面で分割線の
 # 向きが確定したら見直すこと。
+# L1の中央線上の2個は共用(team="")。
 # (build_spot_id, level, team, origin)
 BUILD_SPOTS = [
     ("l1_red_1", 1, TeamColor.RED, (L1_ORIGIN[0], L1_ORIGIN[1])),
@@ -214,6 +248,8 @@ BUILD_SPOTS = [
     ("l1_blue_1", 1, TeamColor.BLUE, (L1_ORIGIN[0] + L1_SIZE - BUILD_SPOT_SIZE[0], L1_ORIGIN[1])),
     ("l1_blue_2", 1, TeamColor.BLUE,
      (L1_ORIGIN[0] + L1_SIZE - BUILD_SPOT_SIZE[0], L1_ORIGIN[1] + L1_SIZE - BUILD_SPOT_SIZE[1])),
+    ("l1_shared_1", 1, "", (FIELD_CENTER - BUILD_SPOT_SIZE[0] / 2, L1_ORIGIN[1])),
+    ("l1_shared_2", 1, "", (FIELD_CENTER - BUILD_SPOT_SIZE[0] / 2, L1_ORIGIN[1] + L1_SIZE - BUILD_SPOT_SIZE[1])),
     ("l2_red_1", 2, TeamColor.RED, (L2_ORIGIN[0], L2_ORIGIN[1])),
     ("l2_red_2", 2, TeamColor.RED, (L2_ORIGIN[0], L2_ORIGIN[1] + L2_SIZE - BUILD_SPOT_SIZE[1])),
     ("l2_blue_1", 2, TeamColor.BLUE, (L2_ORIGIN[0] + L2_SIZE - BUILD_SPOT_SIZE[0], L2_ORIGIN[1])),

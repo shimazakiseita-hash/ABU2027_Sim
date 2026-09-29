@@ -70,19 +70,69 @@ def br_transfer_wait_point() -> tuple[float, float]:
     return (center[0] + _TRANSFER_TARGET_OFFSET_MM, center[1] + _TRANSFER_TARGET_OFFSET_MM)
 
 
+_SHARED_BUILD_SPOT_IDS = {spot_id for spot_id, _level, team, _origin in fc.BUILD_SPOTS if team == ''}
+
+
 def sanctuary_mandate_satisfied(towers, required_layers: int) -> bool:
     """3.6/4.5.1(秘蹟の要件, Sanctuary Mandate): 完成塔(積み上げ段数が
     required_layers以上)が2つ以上、かつそのうち少なくとも1つが共有エリアの
     建築スポットにあること。これを満たすまでTRはムスティカを回収できない。
-    L2はルールブック上「全体が共用エリア」なので、level==2の完成塔があれば
-    共有エリア条件を満たす(L1にも一部共有エリアがあり得るが、
-    field_constants.BUILD_SPOTSは現状L1の4隅を赤/青専有として割り当てて
-    いるため、この簡易判定ではL2のみを共有扱いとする)。towersは
-    TowerState(build_spot_id, level, block_types, ...)相当のリスト。"""
+    共有エリアの建築スポットは、L2の全スポット(ルールブック上「全体が共用
+    エリア」)とL1中央線上の共用スポット(field_constants.BUILD_SPOTSでteam="")。
+    towersはTowerState(build_spot_id, level, block_types, ...)相当のリスト。"""
     complete = [t for t in towers if len(t.block_types) >= required_layers]
     if len(complete) < 2:
         return False
-    return any(t.level == 2 for t in complete)
+    return any(t.level == 2 or t.build_spot_id in _SHARED_BUILD_SPOT_IDS for t in complete)
+
+
+# 6.2.1: TRはL1/L2の鉛直境界内に入れない(4.3.3: ロボットのどの部分も)。ロボット
+# 中心がL1をロボット半幅だけ膨らませた矩形に入らなければ、車体はL1に掛からない
+_L1_KEEP_OUT_MARGIN_MM = _ROBOT_HALF_WIDTH_MM
+# 回り込むときの経由点は、上の禁止矩形からさらに余裕を持たせたL1の角の外側
+_L1_DETOUR_MARGIN_MM = _ROBOT_HALF_WIDTH_MM + 250.0
+
+
+def _segment_hits_rect(p0, p1, rect_min, rect_max) -> bool:
+    """線分p0-p1が軸平行矩形(rect_min-rect_max)の内部を通るか(Liang-Barsky法)。"""
+    t0, t1 = 0.0, 1.0
+    d = (p1[0] - p0[0], p1[1] - p0[1])
+    for axis in (0, 1):
+        for p, q in ((-d[axis], p0[axis] - rect_min[axis]), (d[axis], rect_max[axis] - p0[axis])):
+            if p == 0.0:
+                if q < 0.0:
+                    return False
+                continue
+            t = q / p
+            if p < 0.0:
+                t0 = max(t0, t)
+            else:
+                t1 = min(t1, t)
+            if t0 > t1:
+                return False
+    return True
+
+
+def tr_route_waypoint(current_uv: tuple[float, float], target_uv: tuple[float, float]) -> tuple[float, float]:
+    """
+    TRがtarget_uvへ直進するとL1を横切る(6.2.1違反)場合、L1の角の外側を回り込む
+    経由点を返す。横切らないならtarget_uvをそのまま返す。毎tick呼び直す前提で、
+    経由点に近づくと直進がL1に掛からなくなり、自然に本来の目標へ切り替わる。
+    """
+    m = _L1_KEEP_OUT_MARGIN_MM
+    rect_min = (fc.L1_ORIGIN[0] - m, fc.L1_ORIGIN[1] - m)
+    rect_max = (fc.L1_ORIGIN[0] + fc.L1_SIZE + m, fc.L1_ORIGIN[1] + fc.L1_SIZE + m)
+    if not _segment_hits_rect(current_uv, target_uv, rect_min, rect_max):
+        return target_uv
+    dm = _L1_DETOUR_MARGIN_MM
+    corners = [
+        (u, v)
+        for u in (fc.L1_ORIGIN[0] - dm, fc.L1_ORIGIN[0] + fc.L1_SIZE + dm)
+        for v in (fc.L1_ORIGIN[1] - dm, fc.L1_ORIGIN[1] + fc.L1_SIZE + dm)
+    ]
+    reachable = [c for c in corners if not _segment_hits_rect(current_uv, c, rect_min, rect_max)]
+    return min(reachable or corners,
+               key=lambda c: math.dist(current_uv, c) + math.dist(c, target_uv))
 
 
 def drive_toward(
