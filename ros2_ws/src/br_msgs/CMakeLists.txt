@@ -19,6 +19,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DetectedBlock.msg"
   "msg/DetectedBlockArray.msg"
   "msg/DetectedMustika.msg"
+  "msg/MechanismCmd.msg"
+  "msg/MechanismState.msg"
   DEPENDENCIES geometry_msgs
 )
 

@@ -29,14 +29,31 @@ from br_strategy_sim.sim_bridge_node import SimBridgeNode
 
 
 class SimHarness:
-    """物理シム・審判・観測・(必要なら)TR/BR意思決定ノードを1プロセスで束ねる。"""
+    """物理シム・審判・観測・(必要なら)TR/BR意思決定ノードを1プロセスで束ねる。
 
-    def __init__(self, enable_decision: bool = True):
-        rclpy.init()
-        self.bridge = SimBridgeNode()
+    physics='3d'では、物理シムの代わりに3Dシム(ハードウェア境界)と、その上で本番と同じ
+    足回り制御・推測航法・機構制御(br_robot)をTR/BRそれぞれに動かす。観測ノードは
+    認識の代行だけをする(推定位置は推測航法が出す)。
+    """
+
+    def __init__(self, enable_decision: bool = True, physics: str = '2d'):
+        if physics == '3d':
+            # 3Dシムのビューアを開かない・観測ノードは推定位置を出さない(全ノード共通の指定)
+            rclpy.init(args=['--ros-args', '-p', 'show_viewer:=false', '-p', 'publish_pose:=false'])
+            from br_robot.base_controller_node import BaseControllerNode
+            from br_robot.mechanism_controller_node import MechanismControllerNode
+            from br_robot.odometry_node import OdometryNode
+            from br_strategy_sim.sim_3d_node import Sim3DNode
+            self.bridge = Sim3DNode()
+            robot_nodes = [cls(r) for r in ('tr', 'br')
+                           for cls in (BaseControllerNode, OdometryNode, MechanismControllerNode)]
+        else:
+            rclpy.init()
+            self.bridge = SimBridgeNode()
+            robot_nodes = []
         self.referee = BrRefereeNode()
         self.observation = BrObservationNode()
-        self.nodes = [self.bridge, self.referee, self.observation]
+        self.nodes = [self.bridge, self.referee, self.observation, *robot_nodes]
 
         self.tr_decision: BrDecisionTrNode | None = None
         self.br_decision: BrDecisionBrNode | None = None
@@ -76,8 +93,8 @@ class SimHarness:
 
 
 @contextlib.contextmanager
-def sim_harness(enable_decision: bool = True):
-    harness = SimHarness(enable_decision=enable_decision)
+def sim_harness(enable_decision: bool = True, physics: str = '2d'):
+    harness = SimHarness(enable_decision=enable_decision, physics=physics)
     try:
         yield harness
     finally:

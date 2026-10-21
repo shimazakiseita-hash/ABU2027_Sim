@@ -41,6 +41,18 @@ class RobotSpec:
     release_time_s: float
     place_time_s: float
     flip_time_s: float
+    body_height_mm: float
+    wheel_radius_mm: float
+    wheel_half_track_mm: float
+    wheel_half_base_mm: float
+    encoder_counts_per_rev: int
+    wheel_slip_std: float
+    imu_yaw_noise_std_rad: float
+    imu_gyro_noise_std_rad_s: float
+    lidar_beams: int
+    lidar_range_max_mm: float
+    lidar_mount_height_mm: float
+    lidar_rate_hz: float
 
     @property
     def half_width_mm(self) -> float:
@@ -73,3 +85,33 @@ def declare_robot_specs(node) -> dict[str, RobotSpec]:
     node.declare_parameter('robot_spec_file', '')
     path = node.get_parameter('robot_spec_file').value or None
     return load_robot_specs(path)
+
+
+# 4輪メカナムの運動学(仮の足回り)。機体座標: x=前方, y=左, wz=反時計回り。
+# 車輪の順番は 左前, 右前, 左後, 右後。車輪の角速度はrad/s。
+
+def mecanum_wheel_speeds(spec: RobotSpec, vx_mm_s: float, vy_mm_s: float, wz_rad_s: float) -> list[float]:
+    r = spec.wheel_radius_mm
+    k = spec.wheel_half_base_mm + spec.wheel_half_track_mm
+    return [
+        (vx_mm_s - vy_mm_s - k * wz_rad_s) / r,
+        (vx_mm_s + vy_mm_s + k * wz_rad_s) / r,
+        (vx_mm_s + vy_mm_s - k * wz_rad_s) / r,
+        (vx_mm_s - vy_mm_s + k * wz_rad_s) / r,
+    ]
+
+
+def mecanum_body_velocity(spec: RobotSpec, wheels_rad_s) -> tuple[float, float, float]:
+    """車輪の角速度から機体の速度(vx mm/s, vy mm/s, wz rad/s)。mecanum_wheel_speedsの逆。"""
+    w1, w2, w3, w4 = wheels_rad_s
+    r = spec.wheel_radius_mm
+    k = spec.wheel_half_base_mm + spec.wheel_half_track_mm
+    return (r / 4 * (w1 + w2 + w3 + w4), r / 4 * (-w1 + w2 + w3 - w4), r / (4 * k) * (-w1 + w2 - w3 + w4))
+
+
+def body_axes(theta: float) -> tuple[tuple[float, float], tuple[float, float]]:
+    """フィールド座標での機体の前方・左方向の単位ベクトル。theta=0で前方が+V(このシムの約束)。"""
+    import math
+    forward = (-math.sin(theta), math.cos(theta))
+    left = (-math.cos(theta), -math.sin(theta))
+    return forward, left

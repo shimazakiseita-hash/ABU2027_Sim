@@ -12,12 +12,17 @@ br_decision_tr_node, br_decision_br_nodeをまとめて起動する。
     ros2 launch br_strategy_sim launch_simulator.py enable_decision:=false enable_teleop:=true \
         match_duration_sec:=999999
     ros2 launch br_strategy_sim launch_simulator.py robot_spec_file:=/path/to/robot_spec.yaml
+    ros2 launch br_strategy_sim launch_simulator.py physics:=3d
+
+physics:=3dでは、2Dの物理シムの代わりに3Dシム(br_sim_3d_node: 実機のcan_node+STM32+センサーの
+代わり)を起動し、その上で本番と同じ足回り制御・推測航法・機構制御(br_robotパッケージ)を
+TR/BRそれぞれに動かす。観測ノードは認識(/detected_*)の代行だけをする。
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -45,6 +50,19 @@ def generate_launch_description():
     # パッケージ同梱のconfig/robot_spec.yaml(仮値)を使う
     robot_spec_file_arg = DeclareLaunchArgument('robot_spec_file', default_value='')
     spec = {'robot_spec_file': LaunchConfiguration('robot_spec_file')}
+    # 物理シムの種類: 2d(今までのpymunkのシム) | 3d(MuJoCo、ハードウェア境界の代わり)
+    physics_arg = DeclareLaunchArgument('physics', default_value='2d')
+    # 3Dシムのビューア(MuJoCoの3D表示)を開くか
+    show_viewer_arg = DeclareLaunchArgument('show_viewer', default_value='true')
+    is_3d = IfCondition(PythonExpression(["'", LaunchConfiguration('physics'), "' == '3d'"]))
+    is_2d = UnlessCondition(PythonExpression(["'", LaunchConfiguration('physics'), "' == '3d'"]))
+    robot_nodes = [
+        Node(package='br_robot', executable=executable, name=f'{robot}_{name}',
+             parameters=[{'robot': robot}, spec], condition=is_3d)
+        for robot in ('tr', 'br')
+        for executable, name in (('base_controller_node', 'base_controller'), ('odometry_node', 'odometry'),
+                                 ('mechanism_controller_node', 'mechanism_controller'))
+    ]
 
     return LaunchDescription([
         observation_noise_arg,
@@ -54,8 +72,13 @@ def generate_launch_description():
         enable_teleop_arg,
         match_duration_sec_arg,
         robot_spec_file_arg,
+        physics_arg,
+        show_viewer_arg,
         Node(package='br_strategy_sim', executable='br_sim_bridge_node', name='br_sim_bridge_node',
-             parameters=[spec]),
+             parameters=[spec], condition=is_2d),
+        Node(package='br_strategy_sim', executable='br_sim_3d_node', name='br_sim_3d_node',
+             parameters=[{'show_viewer': LaunchConfiguration('show_viewer')}, spec], condition=is_3d),
+        *robot_nodes,
         Node(
             package='br_strategy_sim',
             executable='br_referee_node',
@@ -69,7 +92,11 @@ def generate_launch_description():
             package='br_strategy_sim',
             executable='br_observation_node',
             name='br_observation_node',
-            parameters=[{'observation_noise': LaunchConfiguration('observation_noise')}],
+            parameters=[{
+                'observation_noise': LaunchConfiguration('observation_noise'),
+                # 3Dでは推定位置は推測航法(br_robot)が出すので、観測ノードは認識の代行だけ
+                'publish_pose': PythonExpression(["'", LaunchConfiguration('physics'), "' != '3d'"]),
+            }],
         ),
         Node(
             package='br_strategy_sim',

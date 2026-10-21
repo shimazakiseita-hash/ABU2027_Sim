@@ -69,7 +69,10 @@ end-to-endループを確認済み（headless実行、正常完走時`/score/red
 - 6.6妨害（共用区域）：相手ロボットの物理的な存在自体をPhase1ではシミュレート
   していない（自チーム1台構成の前提）ため、対応するには先に相手ロボットの
   モデル化が必要
-- Phase 2 (MuJoCo) は未着手
+- **3Dシムの推測航法の誤差が実機より小さいと思われる**: 車輪の滑りを平均0のランダムな
+  ノイズで入れているため、通しで誤差が10mm以下に収まる。実機のメカナムは向きに偏った滑りが
+  出るので、機体ができたら実測して滑りのモデル（偏り）を入れ、LiDARでの補正を実装する
+- 3Dシムで未実装: カメラ画像と本番の認識ノード、LiDARによる自己位置補正、車輪・アームの機構モデル
 
 ## 参考アーキテクチャ
 
@@ -85,7 +88,7 @@ end-to-endループを確認済み（headless実行、正常完走時`/score/red
 
 - ROS2 Jazzy, Python3
 - pymunk (2D物理), pygame (2D可視化)
-- MuJoCo (Phase 2、未着手)
+- MuJoCo (Phase 2の3Dシム。システムのpython3に`pip install --user --break-system-packages mujoco`で導入)
 
 ## テスト
 
@@ -117,8 +120,38 @@ end-to-endループを確認済み（headless実行、正常完走時`/score/red
   - `robot_spec.py` — 機体仕様（`config/robot_spec.yaml`）の読み込み
   - `field_geometry.py` — 柵と地形（段差・スロープ・階段）の簡易モデル
   - `navigation.py` — 意思決定ノード用の経路計画（格子A*）と経路追従
+  - `sim_3d_node` / `scene_3d.py` — 3Dシム（MuJoCo）。実機のcan_node＋STM32＋センサーの代わり
+    （後述「3Dシム」）
+- `br_robot` — 実機でもシムでも同じものを動かすノード: `base_controller_node`（フィールド座標の
+  cmd_vel→機体座標の`base_cmd`）、`odometry_node`（エンコーダ＋IMUの推測航法→推定位置）、
+  `mechanism_controller_node`（ブロック/スポットのID→機体座標の目標位置の機構指令）
   - `physics_blocks.py` / `robot_body.py` / `field_constants.py` /
     `field_drawing.py` / `decision_common.py` — 共通ロジック・定数・描画
+
+## 3Dシム（Phase 2の第一段）
+
+既定の機体仕様の仮値で、3Dでも意思決定ノード込みで最後まで完走し490点になることを確認済み
+（`test_multi_tower_e2e_3d.py`、約10分）。
+
+`physics:=3d`で起動する3Dシム（`br_sim_3d_node`）は、futbol_mainのMuJoCoシムと同じ考え方で、
+実機の**can_node＋STM32＋モーター・センサーの代わり**をする（ユーザーの方針: 実際のROSの
+プログラムが本番と同じように動く環境にする）。ハードウェア境界のトピック（`base_cmd`・
+`wheel_deltas`・`imu`・`scan`・`mechanism_cmd/state`）は2027機の低レベル仕様が未定のため仮定義で、
+`docs/topic_contract.md`の7章にある。その上では`br_robot`の本番ノードが動くので、推測航法の誤差で
+つかむ/置く位置がずれ、塔が物理的に崩れることまで再現される。
+
+方針は「まず箱型で全体を通し、機体設計が決まったら車輪・アームのモデルに差し替える」。
+今の簡略化:
+- ロボットは機体仕様の寸法の箱（mocap）。平面の動き（加減速・旋回・柵・通れない地形）は2Dと
+  同じ平面モデル（`robot_body.RobotBody`）で決め、高さは`field_geometry.floor_height_at`に合わせる。
+  ブロックは車体に押されるが、車体はブロックに押し返されない
+- 車輪エンコーダは仮の4輪メカナム配置で、実際の車体の動きから逆算した値に滑りのノイズを乗せる
+- 機構は「機体中心から届く範囲の腕」。CLOSEで目標位置近くの物を車体の上に固定（溶接拘束）、
+  PLACEで目標位置の真下にある物の上に置いて離す。中央の柱の受けは形を作らず、近くに置けば固定
+- 柵の高さ（外周・中央の仕切り200mm、段差の縁は100mm）は記載が無いので仮値
+- 認識（`/detected_*`）は本番ノードがまだ無いので観測ノードが正解値から代行。カメラ画像は未実装
+- 推測航法はエンコーダ＋IMUのみで、LiDARによる補正は未実装（誤差は走るほど溜まる）
+- 塔の状態（得点の元）は、建築スポットの上に実際に積まれている物を高さ順に数えて作る
 
 ## 参照ドキュメント
 

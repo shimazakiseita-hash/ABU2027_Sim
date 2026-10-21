@@ -158,3 +158,41 @@ TR_KEEP_OUT_RECTS: list[Rect] = [
     (fc.L1_ORIGIN, (fc.L1_SIZE, fc.L1_SIZE)),
     (fc.L2_ORIGIN, (fc.L2_SIZE, fc.L2_SIZE)),
 ]
+
+
+# 柵(フィールド外周等)の太さ。シムの物理(2D/3D)で使う
+WALL_THICKNESS_MM = 10.0
+# スタートゾーンに置くとき、柵や隣のロボットと重ならないための隙間
+START_SPAWN_CLEARANCE_MM = 10.0
+
+
+def start_positions(specs) -> dict[str, tuple[float, float]]:
+    """TR/BRの開始位置(シムの初期配置と、本番の推測航法の初期値で共有)。
+    スタートゾーン(原点の角から2個並ぶ)のうち、どちらをTR/BRに使うかはチームの選択で、
+    角側にTR(北のストレージへまっすぐ向かう)、その隣にBR(北東のL1階段へ向かう)を置くと
+    出だしの経路が交差しない。外周の柵と互いに重ならないよう少し離す。"""
+    tr_half = specs['tr'].half_width_mm
+    br_half = specs['br'].half_width_mm
+    edge = WALL_THICKNESS_MM / 2 + START_SPAWN_CLEARANCE_MM
+    tr = (edge + tr_half, edge + tr_half)
+    br = (tr[0] + tr_half + START_SPAWN_CLEARANCE_MM + br_half, edge + br_half)
+    return {'tr': tr, 'br': br}
+
+
+def floor_height_at(u: float, v: float) -> float:
+    """その位置の床の高さ(mm)。スロープは下端0→上端L1の直線、L1階段は1段ごとに上がる。"""
+    region = region_at(u, v)
+    if region == 'ground':
+        return 0.0
+    if region in ('l1', 'transfer', 'landing'):
+        return float(fc.L1_Z)
+    if region == 'l2':
+        return float(fc.L2_Z)
+    if region == 'l2_stairs':
+        return float(fc.L1_Z + fc.STAIR_STEP_HEIGHT)
+    if region == 'ramp':
+        top_v = fc.RAMP_ORIGIN[1]  # 受渡しエリア側(L1の高さ)
+        return max(0.0, min(float(fc.L1_Z), fc.L1_Z * (1.0 - (v - top_v) / fc.RAMP_LENGTH)))
+    # l1_stairs: スタートゾーン側(V小)が下。1段目150, 2段目300, 3段目450
+    step = min(fc.L1_STAIR_STEP_COUNT - 1, max(0, int((v - fc.L1_STAIRS_ORIGIN[1]) // fc.STAIR_STEP_LENGTH)))
+    return float((step + 1) * fc.STAIR_STEP_HEIGHT)

@@ -30,6 +30,12 @@ Python venv環境を有効にしたまま実行しないこと（後述の既知
 絶対パスで指定しているため、他のvenvが有効になっていてもシステムの
 python3に正しくインストールされる。
 
+3Dシム（`physics:=3d`）を使う場合は、MuJoCoも同じ方法で入れる:
+
+```bash
+/usr/bin/python3 -m pip install --user --break-system-packages mujoco
+```
+
 ### 2. ビルド
 
 ```bash
@@ -96,6 +102,25 @@ python3に正しくインストールされる。
 複数指定する場合は空白区切りでそのまま並べればよい
 （例: `./tools/sim_start.sh team:=blue observation_noise:=true`）。
 
+### 3Dシム（MuJoCo）
+
+```bash
+./tools/sim_start.sh physics:=3d                        # 3Dビューア+2D可視化が開く
+./tools/sim_start.sh physics:=3d show_viewer:=false     # 3Dビューアを開かない
+./tools/sim_start.sh physics:=3d enable_decision:=false enable_teleop:=true \
+                      match_duration_sec:=999999        # 3Dで手動操縦
+```
+
+3Dシム（`br_sim_3d_node`）は実機の**can_node＋STM32＋モーター・センサーの代わり**で、
+車輪エンコーダ・IMU・LiDARの値を返し、機体座標の速度指令と機構の指令を受ける
+（トピックは`docs/topic_contract.md`の「ハードウェア境界」）。その上では、本番でも同じものを
+動かす足回り制御・推測航法・機構制御（`br_robot`パッケージ）がTR/BRそれぞれに起動する。
+そのため、推測航法の誤差で置く位置がずれると、塔が物理的に崩れる。
+
+- 3Dビューア: マウスの左ドラッグで回転、右ドラッグで移動、ホイールで拡大縮小
+- ロボットは機体仕様の寸法の箱（車輪・アームのモデルは機体設計が決まってから）
+- 認識（`/detected_*`）は本番ノードがまだ無いので、観測ノードが正解値から代行する
+
 ### 機体仕様（速度・寸法・動作時間）
 
 TR/BRの機体の数値は `ros2_ws/src/br_strategy_sim/config/robot_spec.yaml` に
@@ -118,6 +143,9 @@ TR/BRの機体の数値は `ros2_ws/src/br_strategy_sim/config/robot_spec.yaml` 
 | `grasp_reach_mm` | 車体の縁からどこまで離れた物をつかめるか |
 | `grasp_time_s` / `release_time_s` | つかむ / はなすのにかかる時間 |
 | `place_time_s` / `flip_time_s` | 建築スポットに置く（ムスティカを柱に置く）/ スカイを裏返すのにかかる時間（BR） |
+| `body_height_mm` | 車体の高さ（3Dシムの箱） |
+| `wheel_*` / `encoder_counts_per_rev` / `wheel_slip_std` | 足回り（仮: 4輪メカナム）の寸法、エンコーダ分解能、滑りのノイズ |
+| `imu_*` / `lidar_*` | IMUのノイズ、LiDARの本数・最大距離・取り付け高さ・周期 |
 
 ### 手動操縦（デバッグ用）
 
@@ -189,6 +217,8 @@ source ros2_ws/install/setup.bash
 python3 -m pytest ros2_ws/src/br_strategy_sim/test/ -v
 ```
 
+3Dシムのテスト（`test_multi_tower_e2e_3d.py`）はMuJoCoが入っていないとskipされる。
+
 ## パッケージ構成
 
 - `br_msgs` — カスタムメッセージ定義一式
@@ -203,6 +233,8 @@ python3 -m pytest ros2_ws/src/br_strategy_sim/test/ -v
   - `robot_spec.py` — 機体仕様（`config/robot_spec.yaml`）の読み込み
   - `field_geometry.py` — 柵と地形（段差・スロープ・階段）の簡易モデル
   - `navigation.py` — 意思決定ノード用の経路計画（格子A*）と経路追従
+  - `sim_3d_node` / `scene_3d.py` — 3Dシム（MuJoCo、ハードウェア境界の代わり）とそのフィールドモデル
+- `br_robot` — 実機でもシムでも同じものを動かすノード（足回り制御・推測航法・機構制御）
   - `field_constants.py` / `physics_blocks.py` / `robot_body.py` /
     `field_drawing.py` / `decision_common.py` — 共通の定数・物理・描画ロジック
 

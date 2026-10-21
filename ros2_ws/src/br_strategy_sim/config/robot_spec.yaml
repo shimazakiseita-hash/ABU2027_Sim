@@ -19,6 +19,20 @@ tr:
   release_time_s: 0.5           # はなし始めてから手を離れるまで
   place_time_s: 0.0             # TRは建築しない
   flip_time_s: 0.0
+  body_height_mm: 600           # 車体の高さ(3Dシムの箱の高さ)
+  # 足回り(仮: 4輪メカナム)。順番は 左前, 右前, 左後, 右後
+  wheel_radius_mm: 50
+  wheel_half_track_mm: 250      # 左右の車輪の間隔の半分
+  wheel_half_base_mm: 250       # 前後の車輪の間隔の半分
+  encoder_counts_per_rev: 2048
+  wheel_slip_std: 0.02          # エンコーダに乗る滑りの割合(標準偏差)
+  # センサー(3Dシムがハードウェア境界で返す値のノイズ)
+  imu_yaw_noise_std_rad: 0.002
+  imu_gyro_noise_std_rad_s: 0.005
+  lidar_beams: 360
+  lidar_range_max_mm: 12000
+  lidar_mount_height_mm: 300    # 車体の床からの高さ
+  lidar_rate_hz: 10
 
 br:
   footprint_mm: [700, 700]
@@ -35,3 +49,17 @@ br:
   release_time_s: 0.5
   place_time_s: 2.0             # 建築スポットへ置く(ムスティカを中央の柱へ置くのも同じ)
   flip_time_s: 2.0              # 塔の一番上のスカイを裏返す
+  body_height_mm: 600           # 車体の高さ(3Dシムの箱の高さ)
+  # 足回り(仮: 4輪メカナム)。順番は 左前, 右前, 左後, 右後
+  wheel_radius_mm: 50
+  wheel_half_track_mm: 250      # 左右の車輪の間隔の半分
+  wheel_half_base_mm: 250       # 前後の車輪の間隔の半分
+  encoder_counts_per_rev: 2048
+  wheel_slip_std: 0.02          # エンコーダに乗る滑りの割合(標準偏差)
+  # センサー(3Dシムがハードウェア境界で返す値のノイズ)
+  imu_yaw_noise_std_rad: 0.002
+  imu_gyro_noise_std_rad_s: 0.005
+  lidar_beams: 360
+  lidar_range_max_mm: 12000
+  lidar_mount_height_mm: 300    # 車体の床からの高さ
+  lidar_rate_hz: 10

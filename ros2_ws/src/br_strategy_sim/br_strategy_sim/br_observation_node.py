@@ -68,6 +68,10 @@ class BrObservationNode(Node):
 
         self.declare_parameter('observation_noise', False)
         self._noise_enabled = self.get_parameter('observation_noise').value
+        # 3Dシムでは推定位置を本番と同じ推測航法ノード(br_robot.odometry_node)が出すので、
+        # このノードは認識(/detected_*)の代行だけをする
+        self.declare_parameter('publish_pose', True)
+        self._publish_pose = self.get_parameter('publish_pose').value
 
         self._tr_pose: RobotPose | None = None
         self._br_pose: RobotPose | None = None
@@ -102,6 +106,8 @@ class BrObservationNode(Node):
         self._publish_pose_estimate(self.pub_br_pose_estimated, msg)
 
     def _publish_pose_estimate(self, publisher, true_pose: RobotPose) -> None:
+        if not self._publish_pose:
+            return
         out = PoseWithCovarianceStamped()
         out.header.stamp = self.get_clock().now().to_msg()
         out.header.frame_id = 'field'

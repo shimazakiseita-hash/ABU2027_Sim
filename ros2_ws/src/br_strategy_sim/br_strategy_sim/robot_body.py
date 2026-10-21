@@ -18,6 +18,7 @@ import math
 
 import pymunk
 
+from . import field_geometry as fg
 from .physics_blocks import _LEVEL_CATEGORY, BOUNDARY_CATEGORY, ROBOT_COLLISION_TYPE
 
 M_TO_MM = 1000.0
@@ -122,3 +123,18 @@ def make_robot_body(
     shape.collision_type = ROBOT_COLLISION_TYPE
     space.add(body, shape)
     return RobotBody(robot_id, body, shape, level, spec)
+
+
+def add_static_field(space: pymunk.Space, robots) -> None:
+    """柵(field_geometry.WALL_SEGMENTS)と、ロボットごとの通れない地形を静的形状として置く。"""
+    static = space.static_body
+    for kind, p0, p1 in fg.WALL_SEGMENTS:
+        segment = pymunk.Segment(static, p0, p1, fg.WALL_THICKNESS_MM / 2)
+        segment.filter = wall_filter(kind)
+        segment.friction = 0.5
+        space.add(segment)
+    for robot in robots:
+        for (u0, v0), (w, h) in fg.forbidden_terrain_rects(robot.spec):
+            poly = pymunk.Poly(static, [(u0, v0), (u0 + w, v0), (u0 + w, v0 + h), (u0, v0 + h)])
+            poly.filter = robot_only_filter(robot.robot_id)
+            space.add(poly)

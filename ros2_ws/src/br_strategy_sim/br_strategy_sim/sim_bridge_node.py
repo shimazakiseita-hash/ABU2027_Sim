@@ -71,15 +71,11 @@ from .physics_blocks import (
     make_mustika,
     make_sky_block,
 )
-from .robot_body import M_TO_MM, RobotBody, make_robot_body, robot_only_filter, wall_filter
+from .robot_body import M_TO_MM, RobotBody, add_static_field, make_robot_body
 from .robot_spec import declare_robot_specs
 
 PHYSICS_HZ = 60.0
 
-# 柵(フィールド外周等)の太さ。ロボットとだけ衝突する
-WALL_THICKNESS_MM = 10.0
-# スタートゾーンに置くとき、柵や隣のロボットと重ならないための隙間
-START_SPAWN_CLEARANCE_MM = 10.0
 
 # ストレージのアースブロック配置: 2D物理では実寸(350mm角)通りの2段積みを
 # 表現できないため、1段に並べて配置する簡略化(要調整)。ピッチは350mm角の
@@ -99,28 +95,34 @@ STORAGE_BLOCK_PITCH_V_MM = 500.0
 STORAGE_BLOCK_COLS = 5
 
 
-def _spawn_storage_earth_blocks(space: pymunk.Space) -> list[PhysicsBlock]:
-    blocks = []
-    count = fc.STORAGE_AREA_EARTH_BLOCK_COUNT
-    for i in range(count):
+def earth_block_layout() -> list[tuple[str, tuple[float, float]]]:
+    """ストレージのアースブロックの(id, 初期位置)。2D/3Dシムで共有する。"""
+    layout = []
+    for i in range(fc.STORAGE_AREA_EARTH_BLOCK_COUNT):
         col = i % STORAGE_BLOCK_COLS
         row = i // STORAGE_BLOCK_COLS
         u = fc.STORAGE_AREA_ORIGIN[0] + fc.EARTH_BLOCK_SIZE / 2 + col * STORAGE_BLOCK_PITCH_U_MM
         v = (fc.STORAGE_AREA_ORIGIN[1] + fc.STORAGE_AREA_SIZE[1]
              - fc.EARTH_BLOCK_SIZE / 2 - row * STORAGE_BLOCK_PITCH_V_MM)
-        blocks.append(make_earth_block(space, f'earth_red_{i:02d}', (u, v), LEVEL_GROUND, fc.TeamColor.RED))
-    return blocks
+        layout.append((f'earth_red_{i:02d}', (u, v)))
+    return layout
 
 
-def _spawn_shared_sky_blocks(space: pymunk.Space) -> list[PhysicsBlock]:
+def _spawn_storage_earth_blocks(space: pymunk.Space) -> list[PhysicsBlock]:
+    return [make_earth_block(space, block_id, uv, LEVEL_GROUND, fc.TeamColor.RED)
+            for block_id, uv in earth_block_layout()]
+
+
+def sky_block_layout() -> list[tuple[str, tuple[float, float], str]]:
     """
     ルール4.1.4: 列位置(C1〜C5)を基準に中央列(C3)に対して鏡映対称に配色する。
     「列cが赤上向きなら鏡像列(6-c)は青上向き。中央列(C3)の2個は赤1個・青1個」。
     ここではC1・C2側を赤、C4・C5側を青とする(列cとその鏡像列(6-c)が逆色になれば
     ルールを満たすため、どちらの半分を赤にするかはルール上未指定・実装上の選択)。
     C3の2個は出現順に赤/青を1個ずつ割り当てる。
+    共用エリアのスカイブロックの(id, 初期位置, 上面の色)。2D/3Dシムで共有する。
     """
-    blocks = []
+    layout = []
     rows = fc.SKY_BLOCK_GRID_ROWS
     cols = fc.SKY_BLOCK_GRID_COLS
     center_col = cols // 2  # 0-indexed。cols=5ならC3に相当
@@ -141,9 +143,13 @@ def _spawn_shared_sky_blocks(space: pymunk.Space) -> list[PhysicsBlock]:
                 top_color = fc.TeamColor.RED
             else:
                 top_color = fc.TeamColor.BLUE
-            blocks.append(make_sky_block(space, f'sky_{index:02d}', (u, v), LEVEL_GROUND, top_color))
+            layout.append((f'sky_{index:02d}', (u, v), top_color))
             index += 1
-    return blocks
+    return layout
+
+
+def _spawn_shared_sky_blocks(space: pymunk.Space) -> list[PhysicsBlock]:
+    return [make_sky_block(space, block_id, uv, LEVEL_GROUND, color) for block_id, uv, color in sky_block_layout()]
 
 
 def _yaw_from_body(body: pymunk.Body) -> float:
@@ -178,19 +184,13 @@ class SimBridgeNode(Node):
         )
 
         self._specs = declare_robot_specs(self)
-        # スタートゾーン(原点の角から2個並ぶ)に、外周の柵と互いに重ならないよう置く。
-        # どちらをTR/BRに使うかはチームの選択で、角側にTR(北のストレージへまっすぐ
-        # 向かう)、その隣にBR(北東のL1階段へ向かう)を置くと出だしの経路が交差しない
-        br_half = self._specs['br'].half_width_mm
-        tr_half = self._specs['tr'].half_width_mm
-        edge = WALL_THICKNESS_MM / 2 + START_SPAWN_CLEARANCE_MM
-        tr_start = (edge + tr_half, edge + tr_half)
-        br_start = (tr_start[0] + tr_half + START_SPAWN_CLEARANCE_MM + br_half, edge + br_half)
+        starts = fg.start_positions(self._specs)
+        tr_start, br_start = starts['tr'], starts['br']
         self.br: RobotBody = make_robot_body(
             self.space, 'br', br_start, LEVEL_GROUND, self._specs['br'], fc.ROBOT_WEIGHT_MAX_KG)
         self.tr: RobotBody = make_robot_body(
             self.space, 'tr', tr_start, LEVEL_GROUND, self._specs['tr'], fc.ROBOT_WEIGHT_MAX_KG)
-        self._add_static_field()
+        add_static_field(self.space, (self.tr, self.br))
 
         self.blocks: list[PhysicsBlock] = []
         self.blocks += _spawn_storage_earth_blocks(self.space)
@@ -260,20 +260,6 @@ class SimBridgeNode(Node):
         # 一度trueになったら以後falseが来ても戻さない(想定上は一度しか
         # 発行されないが念のため単調にしておく)
         self._match_ended = self._match_ended or msg.data
-
-    def _add_static_field(self) -> None:
-        """柵(field_geometry.WALL_SEGMENTS)と、ロボットごとの通れない地形を静的形状として置く。"""
-        static = self.space.static_body
-        for kind, p0, p1 in fg.WALL_SEGMENTS:
-            segment = pymunk.Segment(static, p0, p1, WALL_THICKNESS_MM / 2)
-            segment.filter = wall_filter(kind)
-            segment.friction = 0.5
-            self.space.add(segment)
-        for robot in (self.tr, self.br):
-            for (u0, v0), (w, h) in fg.forbidden_terrain_rects(robot.spec):
-                poly = pymunk.Poly(static, [(u0, v0), (u0 + w, v0), (u0 + w, v0 + h), (u0, v0 + h)])
-                poly.filter = robot_only_filter(robot.robot_id)
-                self.space.add(poly)
 
     def _step_physics(self) -> None:
         dt = 1.0 / PHYSICS_HZ

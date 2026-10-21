@@ -280,13 +280,47 @@ geometry_msgs/Point position
 string held_by  # "none" | "tr" | "br"
 ```
 
+## 7. ハードウェア境界（実機: can_node＋STM32 / 3Dシム: br_sim_3d_node）
+
+3Dシム（`physics:=3d`）は、futbol_mainのMuJoCoシムと同じ考え方で、実機の**can_node＋STM32＋
+モーター・センサーの代わり**をする。この境界より上のノードは実機と同じものが動く。
+2027機の低レベル仕様は未定のため、以下は**仮の定義**（機体設計が決まったら見直す）。
+`/<r>` は `tr` / `br`。
+
+| トピック | 型 | 向き | 内容 |
+|---|---|---|---|
+| `/<r>/base_cmd` | `geometry_msgs/Twist` | 上→HW | 機体座標の速度指令（m/s, rad/s）。x=前方, y=左。STM32が車輪へ分配する想定 |
+| `/<r>/wheel_deltas` | `std_msgs/Int16MultiArray` | HW→上 | 4輪（左前,右前,左後,右後）の前回からのエンコーダカウント差（2026機の`wheel_deltas`と同じ形） |
+| `/<r>/imu` | `sensor_msgs/Imu` | HW→上 | 向き（yaw）・角速度・加速度 |
+| `/<r>/scan` | `sensor_msgs/LaserScan` | HW→上 | LiDAR。角度0が機体の前方、反時計回り |
+| `/<r>/mechanism_cmd` | `br_msgs/MechanismCmd` | 上→HW | OPEN / CLOSE / PLACE / FLIP と、機体座標の目標位置（mm） |
+| `/<r>/mechanism_state` | `br_msgs/MechanismState` | HW→上 | 保持しているか・動作中か・直前の指令と結果 |
+
+- 機構指令はブロックIDや建築スポットIDを持たない（実機のグリッパーはIDを知らない）。
+  IDから位置への変換は境界より上の機構制御ノードが、認識結果とフィールド図から行う。
+  そのため自己位置推定の誤差は、そのまま「つかむ/置く位置のずれ」になる
+- 機構は同じ指令を再送してよい（動作中や意味のない指令は無視される）。CLOSEは目標位置から
+  150mm以内の物を、PLACEは目標位置の真下にある物（塔・台・床）の上に置く
+- 車体の向きθは、このプロジェクトの約束どおり「0で前方が+V」。機体座標の前方はフィールドで
+  (−sinθ, cosθ)、左は(−cosθ, −sinθ)
+
+境界より上で動く本番のノード（`br_robot`パッケージ）:
+
+| ノード | 受ける | 出す |
+|---|---|---|
+| `base_controller_node` | `/<r>_cmd_vel`（フィールド座標）, `/<r>_pose_estimated` | `/<r>/base_cmd` |
+| `odometry_node` | `/<r>/wheel_deltas`, `/<r>/imu` | `/<r>_pose_estimated`（推測航法） |
+| `mechanism_controller_node` | `/<r>_gripper_cmd`, `/br_build_action`, `/detected_*`, `/<r>_pose_estimated` | `/<r>/mechanism_cmd` |
+
+認識（`/detected_*`）は本番ノードがまだ無いので、3Dでも`br_observation_node`が正解値から代行する
+（`publish_pose:=false`で推定位置は出さない）。
+
 ## Phase 1 → Phase 2 → 実機での差し替え箇所
 
-意思決定ノード（br_decision）はこの契約だけを見て動く。差し替わるのは
-ハードウェア抽象層のみ：
+意思決定ノード（br_decision）はこの契約だけを見て動く。差し替わる層はモードによって異なる：
 
 | Phase | 差し替え対象 |
 |---|---|
-| Phase 1 (2D sim) | pymunk物理演算 → 本契約トピックへの変換ノード |
-| Phase 2 (3D MuJoCo) | MuJoCo物理演算 → 本契約トピックへの変換ノード |
-| 実機 | STM32/CAN → 本契約トピックへの変換ノード（br_hw_bridge） |
+| Phase 1 (2D sim) | pymunk物理演算が、推定位置・認識結果を直接出し、cmd_vel・把持・建築指令を直接実行する |
+| Phase 2 (3D MuJoCo) | MuJoCoがハードウェア境界（7章）の代わり。足回り制御・推測航法・機構制御は本番のノード |
+| 実機 | can_node＋STM32がハードウェア境界を話す。その上は3Dシムと同じノード |

@@ -18,4 +18,4 @@ if [ -n "${VIRTUAL_ENV:-}" ]; then
   unset VIRTUAL_ENV
 fi
 
-colcon build --packages-select br_msgs br_strategy_sim "$@"
+colcon build --packages-select br_msgs br_strategy_sim br_robot "$@"
