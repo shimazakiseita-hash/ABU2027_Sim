@@ -11,6 +11,7 @@ br_decision_tr_node, br_decision_br_nodeをまとめて起動する。
     ros2 launch br_strategy_sim launch_simulator.py enable_decision:=false
     ros2 launch br_strategy_sim launch_simulator.py enable_decision:=false enable_teleop:=true \
         match_duration_sec:=999999
+    ros2 launch br_strategy_sim launch_simulator.py robot_spec_file:=/path/to/robot_spec.yaml
 """
 
 from launch import LaunchDescription
@@ -40,6 +41,10 @@ def generate_launch_description():
     # 全てのcmd_vel/gripper_cmd等を無視するようになるため(9.4.1)、これを
     # 忘れると「操作しても反応しない」ように見える
     match_duration_sec_arg = DeclareLaunchArgument('match_duration_sec', default_value='180.0')
+    # TR/BRの機体仕様(速度・加速度・寸法・機構の動作時間・通れる地形)。空なら
+    # パッケージ同梱のconfig/robot_spec.yaml(仮値)を使う
+    robot_spec_file_arg = DeclareLaunchArgument('robot_spec_file', default_value='')
+    spec = {'robot_spec_file': LaunchConfiguration('robot_spec_file')}
 
     return LaunchDescription([
         observation_noise_arg,
@@ -48,7 +53,9 @@ def generate_launch_description():
         enable_decision_arg,
         enable_teleop_arg,
         match_duration_sec_arg,
-        Node(package='br_strategy_sim', executable='br_sim_bridge_node', name='br_sim_bridge_node'),
+        robot_spec_file_arg,
+        Node(package='br_strategy_sim', executable='br_sim_bridge_node', name='br_sim_bridge_node',
+             parameters=[spec]),
         Node(
             package='br_strategy_sim',
             executable='br_referee_node',
@@ -56,7 +63,7 @@ def generate_launch_description():
             parameters=[{
                 'team': LaunchConfiguration('team'),
                 'match_duration_sec': LaunchConfiguration('match_duration_sec'),
-            }],
+            }, spec],
         ),
         Node(
             package='br_strategy_sim',
@@ -77,18 +84,21 @@ def generate_launch_description():
             package='br_strategy_sim',
             executable='br_decision_tr_node',
             name='br_decision_tr_node',
+            parameters=[spec],
             condition=IfCondition(LaunchConfiguration('enable_decision')),
         ),
         Node(
             package='br_strategy_sim',
             executable='br_decision_br_node',
             name='br_decision_br_node',
+            parameters=[spec],
             condition=IfCondition(LaunchConfiguration('enable_decision')),
         ),
         Node(
             package='br_strategy_sim',
             executable='br_teleop_node',
             name='br_teleop_node',
+            parameters=[spec],
             condition=IfCondition(LaunchConfiguration('enable_teleop')),
         ),
     ])

@@ -32,8 +32,12 @@ br_decision パッケージからは購読しない規約とする。
 
 | トピック名 | 型 | 内容 |
 |---|---|---|
-| `/true_state/tr_pose` | `geometry_msgs/Pose2D` + level(int) | TRの正確な位置・階層 |
-| `/true_state/br_pose` | `geometry_msgs/Pose2D` + level(int) | BRの正確な位置・階層 |
+| `/true_state/tr_pose` | `geometry_msgs/Pose2D` + level(int) | TRの正確な位置・階層(※) |
+| `/true_state/br_pose` | `geometry_msgs/Pose2D` + level(int) | BRの正確な位置・階層(※) |
+
+※ロボットの階層は位置から決まる(`field_geometry.level_at`)。スロープ・L1階段・踊り場・
+受渡しエリア・L1は1、L2階段・L2は2、それ以外は0。受渡しエリアやスロープはL1と同じ
+階層になるため、TRの6.2.1判定は階層ではなく車体とL1/L2の重なりで行う。
 | `/true_state/blocks` | カスタム msg `BlockArray` | 全ブロックの位置・色・所有チーム・状態 |
 | `/true_state/mustika_pose` | カスタム msg `MustikaPose` | ムスティカの正確な位置・held_by |
 | `/true_state/tower_state` | カスタム msg `TowerArray` | 各建築スポットの構成状況（得点計算の元データ） |
@@ -70,6 +74,19 @@ ros2 launch br_strategy_sim launch_simulator.py observation_noise:=true
 - `linear.x`/`linear.y` は m/s、`angular.z` は rad/s（ROS標準単位のまま）
 - フィールド座標系(u, v)での速度指令としてそのまま扱う（ロボット自身の向きに対する相対速度への変換はしない）
 - シム側(`br_strategy_sim`)は受信時にmm/sへ変換して物理演算(pymunk)に渡す。実機の足回り座標変換はbr_hw_bridge側の責務
+- 速度指令は「目標速度」。シムは機体仕様(`config/robot_spec.yaml`)の最高速度・加減速・
+  旋回の上限、スロープ/階段の速度倍率をかけて実際の速度を決める(実機の足回りと同じく、
+  指令した速度に瞬時にはならない)
+
+`/*_gripper_cmd` と `/br_build_action` の扱い(機構の動作時間):
+- 閉じる指令を出し、対象が把持レンジ内にある状態が機体仕様の`grasp_time_s`続くと保持
+  される。開く指令は`release_time_s`後に手を離れる。意思決定側は`/detected_blocks`の
+  `held_by`で結果を確かめてから次の動作に移る
+- `/br_build_action`は、BRが対象(建築スポット、ムスティカなら中央の柱)の近くにいて、
+  必要な物を持っている(裏返しなら塔の一番上がスカイ)ときだけ受け付けられ、
+  `place_time_s`/`flip_time_s`後に完了する。置く動作の間はBRのグリッパー開指令は
+  無視される。意思決定側は完了(保持が外れる/上面色が変わる)まで同じ指令を送り続けてよい
+- 設置済みの物は再びつかめない
 
 ## 4. 状態フィードバック（ハードウェア抽象層 → 意思決定ノード）
 

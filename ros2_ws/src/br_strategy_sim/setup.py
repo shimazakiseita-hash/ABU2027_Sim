@@ -11,6 +11,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', ['launch/launch_simulator.py']),
+        ('share/' + package_name + '/config', ['config/robot_spec.yaml']),
     ],
     install_requires=['setuptools', 'pygame', 'pymunk'],
     zip_safe=True,

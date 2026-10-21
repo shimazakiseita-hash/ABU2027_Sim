@@ -50,7 +50,9 @@ from std_msgs.msg import Bool, Int32
 from br_msgs.msg import BlockArray, BuildAction, MustikaPose, RobotPose, TowerArray, Violation
 
 from . import field_constants as fc
+from . import field_geometry as fg
 from .physics_blocks import LEVEL_GROUND, LEVEL_L1, LEVEL_L2
+from .robot_spec import declare_robot_specs
 
 # 6.1押出し・7.2設置済み移動の判定: /true_state/blocks受信間隔での位置変化(mm)の閾値。
 # 発行周期が固定でない前提のため「速度」ではなく「1メッセージあたりの変位」として扱う(要調整)。
@@ -69,6 +71,7 @@ class BrRefereeNode(Node):
 
         # Phase1は自チーム1台構成のため、TR/BRの区域侵犯をどちらのteamとして
         # 報告するか、また相手チームがどちらかをパラメータで持たせる
+        self._tr_footprint = declare_robot_specs(self)['tr'].footprint_mm
         self.declare_parameter('team', 'red')
         self._own_team = self.get_parameter('team').value
 
@@ -139,12 +142,24 @@ class BrRefereeNode(Node):
         self._tr_pose = msg
         if self._match_ended:
             return
-        if msg.level in (LEVEL_L1, LEVEL_L2):
+        if self._tr_in_upper_levels(msg):
             # 6.2.1: TRは受渡しエリアを越えてL1/L2の鉛直境界内へ入ってはならない
+            # (4.3.3: 車体のどこか一部でも)。スロープ・受渡しエリア上ではlevelが
+            # L1になるが違反ではないので、levelではなく車体とL1/L2の重なりで判定する
             self._publish_violation('zone', 'tr', self._own_team, forced_retry=True)
             return
         if self._in_opponent_zone(msg.pose.x, msg.pose.y, msg.level):
             self._publish_violation('zone', 'tr', self._own_team, forced_retry=True)
+
+    def _tr_in_upper_levels(self, msg: RobotPose) -> bool:
+        length, width = self._tr_footprint
+        c, s = math.cos(msg.pose.theta), math.sin(msg.pose.theta)
+        corners = [
+            (msg.pose.x + c * x - s * y, msg.pose.y + s * x + c * y)
+            for x in (-width / 2, width / 2) for y in (-length / 2, length / 2)
+        ]
+        return any(_point_in_rect(u, v, origin, size)
+                   for u, v in corners for origin, size in fg.TR_KEEP_OUT_RECTS)
 
     def _on_br_pose(self, msg: RobotPose) -> None:
         # BRは建築のためL1/L2に登る前提なので、レベル侵入自体は違反にしない(6.2.1はTR限定)
@@ -226,6 +241,11 @@ class BrRefereeNode(Node):
     def _check_block_movement(self, block) -> None:
         """held中(正当な運搬)以外でブロックが動いた場合の判定(6.1押出し禁止 / 7.2失格)。"""
         if block.held_by != "none":
+            return
+        if self._prev_block_held.get(block.id, "none") != "none":
+            # 直前まで保持されていた物が手を離れた(受渡しの解放、建築スポットへの設置)
+            # だけで、押して動かしたのではない。設置ではスポット中心へ移るため
+            # 大きく動いて見えるが押出しではない(以前はこれを誤って違反にしていた)
             return
         prev = self._prev_block_position.get(block.id)
         if prev is None:
@@ -314,8 +334,10 @@ class BrRefereeNode(Node):
         was_held_by_br = self._prev_block_held.get(block.id, "none") == "br"
         if was_held_by_br or block.held_by != "br":
             return  # 「(brでない)->br」への遷移でなければ対象外
-        if not _point_in_rect(
-                block.position.x, block.position.y, fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE):
+        # つかんだ後のブロックはBRの中心へ移るので、触れた時点=つかむ直前の位置で判定する
+        # (BRはL1側から手を伸ばしてつかむため、BRの中心は受渡しエリアの外にある)
+        pos = self._prev_block_position.get(block.id, block.position)
+        if not _point_in_rect(pos.x, pos.y, fc.TRANSFER_AREA_ORIGIN, fc.TRANSFER_AREA_SIZE):
             self._publish_violation('transfer', 'br', block.owner_team, forced_retry=True)
 
     def _on_build_action(self, msg: BuildAction) -> None:

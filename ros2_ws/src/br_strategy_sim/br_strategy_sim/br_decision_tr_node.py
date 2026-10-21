@@ -45,19 +45,18 @@ from . import field_constants as fc
 from .decision_common import (
     ARRIVAL_THRESHOLD_MM,
     TRANSFER_POINT_ARRIVAL_THRESHOLD_MM,
-    block_arrival_threshold_mm,
     drive_toward,
     point_in_rect,
     sanctuary_mandate_satisfied,
     transfer_area_rect,
-    tr_route_waypoint,
     tr_transfer_release_point,
 )
+from .navigation import GridMap, Navigator
+from .robot_spec import declare_robot_specs
 
-_EARTH_BLOCK_ARRIVAL_THRESHOLD_MM = block_arrival_threshold_mm(fc.EARTH_BLOCK_SIZE / 2)
-_SKY_BLOCK_ARRIVAL_THRESHOLD_MM = block_arrival_threshold_mm(fc.SKY_BLOCK_SIZE / 2)
-_MUSTIKA_ARRIVAL_THRESHOLD_MM = block_arrival_threshold_mm(fc.MUSTIKA_DIAMETER / 2)
-_ARRIVAL_THRESHOLD_BY_TYPE = {'earth': _EARTH_BLOCK_ARRIVAL_THRESHOLD_MM, 'sky': _SKY_BLOCK_ARRIVAL_THRESHOLD_MM}
+# 物をつかみに寄るとき、把持レンジ(機体仕様)よりこれだけ手前で止まる
+# (観測ノイズや押し合いでレンジぎりぎりの外に出ないように)
+GRASP_APPROACH_SLACK_MM = 50.0
 
 # BUILD_SEQUENCE(br_decision_br_node)の段数と一致させること
 # (秘蹟の要件の「完成塔」判定=/detected_towersのblock_typesが何個揃えば
@@ -73,6 +72,8 @@ _SHARED_AREA_CENTER = (
     fc.GROUND_SHARED_AREA_ORIGIN[1] + fc.GROUND_SHARED_AREA_SIZE[1] / 2,
 )
 _SOURCE_AREA_CENTER_BY_TYPE = {'earth': _STORAGE_AREA_CENTER, 'sky': _SHARED_AREA_CENTER}
+# 受渡しエリアを空けて待つ場所(スロープの途中。ムスティカ台へ向かう道でもある)
+TR_PARK_POINT = (fc.RAMP_ORIGIN[0] + fc.RAMP_SIZE[0] / 2, fc.RAMP_ORIGIN[1] + 1000.0)
 # ストレージから押し出されたブロックも拾えるよう、ストレージエリアを少し広げて探す
 _STORAGE_PICKUP_MARGIN_MM = 1000.0
 
@@ -89,8 +90,8 @@ DELIVERY_SEQUENCE = ('earth', 'earth', 'sky') * NUM_TOWERS
 OWN_TEAM = fc.TeamColor.RED
 
 CONTROL_HZ = 10.0
-GRASP_TIMEOUT_TICKS = int(CONTROL_HZ * 5)  # 5秒粘って掴めなければ諦める
-RELEASE_SETTLE_TICKS = int(CONTROL_HZ * 0.5)  # 解放コマンドが反映されるまでの待ち
+# 機構の動作時間(機体仕様)にこれだけ足した時間で、つかめない/はなれない場合は諦める
+MECHANISM_TIMEOUT_MARGIN_S = 4.0
 
 
 class TrState(Enum):
@@ -118,6 +119,13 @@ class BrDecisionTrNode(Node):
         self._timeout_counter = 0
         self._delivery_index = 0
         self._delivering_mustika = False
+
+        self._spec = declare_robot_specs(self)['tr']
+        self._nav = Navigator(GridMap('tr', self._spec), self._spec)
+        self._approach_threshold = {
+            t: self._spec.grasp_range_mm(t) - GRASP_APPROACH_SLACK_MM for t in ('earth', 'sky', 'mustika')}
+        self._grasp_timeout_ticks = int(CONTROL_HZ * (self._spec.grasp_time_s + MECHANISM_TIMEOUT_MARGIN_S))
+        self._release_timeout_ticks = int(CONTROL_HZ * (self._spec.release_time_s + MECHANISM_TIMEOUT_MARGIN_S))
 
         self.pub_cmd_vel = self.create_publisher(Twist, '/tr_cmd_vel', 10)
         self.pub_gripper = self.create_publisher(GripperCmd, '/tr_gripper_cmd', 10)
@@ -201,12 +209,13 @@ class BrDecisionTrNode(Node):
         return min(candidates, key=lambda b: math.hypot(b.position.x - cur[0], b.position.y - cur[1]))
 
     def _drive_on_ground(self, target_uv, arrival_threshold_mm: float = ARRIVAL_THRESHOLD_MM):
-        """drive_towardと同じだが、直進するとL1を横切る場合はL1の角の外側を回り込む(6.2.1)。"""
-        waypoint = tr_route_waypoint(self._current_uv(), target_uv)
-        if waypoint != target_uv:
-            twist, _arrived = drive_toward(self._current_uv(), waypoint)
-            return twist, False
-        return drive_toward(self._current_uv(), target_uv, arrival_threshold_mm=arrival_threshold_mm)
+        """柵とL1/L2(6.2.1)を避ける経路で目標へ向かう。"""
+        return self._nav.drive(self._current_uv(), target_uv, arrival_threshold_mm)
+
+    def _holding_anything(self) -> bool:
+        if any(b.held_by == 'tr' for b in self._blocks.blocks):
+            return True
+        return self._mustika is not None and self._mustika.held_by == 'tr'
 
     def _tick(self) -> None:
         if self._pose is None:
@@ -218,7 +227,7 @@ class BrDecisionTrNode(Node):
 
         if self._state == TrState.APPROACH_STORAGE:
             delivery_type = self._current_delivery_type()
-            threshold = _ARRIVAL_THRESHOLD_BY_TYPE[delivery_type]
+            threshold = self._approach_threshold[delivery_type]
             target = self._find_block(self._target_block_id) if self._target_block_id else None
             if target is None:
                 target = self._nearest_free_block(delivery_type)
@@ -238,14 +247,14 @@ class BrDecisionTrNode(Node):
                 self._timeout_counter = 0
 
         elif self._state == TrState.GRASP_EARTH_BLOCK:
-            threshold = _ARRIVAL_THRESHOLD_BY_TYPE[self._current_delivery_type()]
+            threshold = self._approach_threshold[self._current_delivery_type()]
             target = self._find_block(self._target_block_id)
             self._timeout_counter += 1
             if target is not None:
                 # 直前の接近で微妙に足りない/押されて離れた場合に備え、
                 # 待つだけでなく引き続き目標へ寄せ続ける
                 twist, _arrived = drive_toward(
-                    self._current_uv(), (target.position.x, target.position.y),
+                    self._current_uv(), (target.position.x, target.position.y), self._spec,
                     arrival_threshold_mm=threshold,
                 )
                 self.pub_cmd_vel.publish(twist)
@@ -255,7 +264,7 @@ class BrDecisionTrNode(Node):
                 open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
             if target is not None and target.held_by == 'tr':
                 self._state = TrState.APPROACH_TRANSFER_AREA
-            elif self._timeout_counter > GRASP_TIMEOUT_TICKS:
+            elif self._timeout_counter > self._grasp_timeout_ticks:
                 self._target_block_id = None
                 self._state = TrState.APPROACH_STORAGE
 
@@ -273,7 +282,8 @@ class BrDecisionTrNode(Node):
             self.pub_cmd_vel.publish(Twist())
             self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
             self._timeout_counter += 1
-            if self._timeout_counter > RELEASE_SETTLE_TICKS:
+            # 機構が実際に手を離した(観測上もう持っていない)のを確かめてから次へ
+            if not self._holding_anything() or self._timeout_counter > self._release_timeout_ticks:
                 self._target_block_id = None
                 if self._delivering_mustika:
                     self._state = TrState.DONE
@@ -286,8 +296,10 @@ class BrDecisionTrNode(Node):
 
         elif self._state == TrState.WAIT_SANCTUARY_MANDATE:
             # 3.6/4.5.1: 完成塔2つ(うち1つは共有エリア)が揃うまでムスティカは
-            # 回収できない。/detected_towersで完成塔を確認できるまでここで待つ
-            self.pub_cmd_vel.publish(Twist())
+            # 回収できない。/detected_towersで完成塔を確認できるまで待つ。受渡しエリアは
+            # 車体1台分の幅しかなく、居座るとBRが最後の物を取りに来られないので退いて待つ
+            twist, _arrived = self._drive_on_ground(TR_PARK_POINT)
+            self.pub_cmd_vel.publish(twist)
             self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
             if sanctuary_mandate_satisfied(self._towers.towers, TOWER_REQUIRED_LAYERS):
                 self._state = TrState.APPROACH_MUSTIKA
@@ -302,7 +314,7 @@ class BrDecisionTrNode(Node):
                 return
             twist, arrived = self._drive_on_ground(
                 (self._mustika.position.x, self._mustika.position.y),
-                arrival_threshold_mm=_MUSTIKA_ARRIVAL_THRESHOLD_MM)
+                arrival_threshold_mm=self._approach_threshold['mustika'])
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = TrState.GRASP_MUSTIKA
@@ -312,8 +324,8 @@ class BrDecisionTrNode(Node):
             self._timeout_counter += 1
             if self._mustika is not None:
                 twist, _arrived = drive_toward(
-                    self._current_uv(), (self._mustika.position.x, self._mustika.position.y),
-                    arrival_threshold_mm=_MUSTIKA_ARRIVAL_THRESHOLD_MM,
+                    self._current_uv(), (self._mustika.position.x, self._mustika.position.y), self._spec,
+                    arrival_threshold_mm=self._approach_threshold['mustika'],
                 )
                 self.pub_cmd_vel.publish(twist)
             else:
@@ -323,12 +335,13 @@ class BrDecisionTrNode(Node):
                 self._delivering_mustika = True
                 self._target_block_id = 'mustika'
                 self._state = TrState.APPROACH_TRANSFER_AREA
-            elif self._timeout_counter > GRASP_TIMEOUT_TICKS:
+            elif self._timeout_counter > self._grasp_timeout_ticks:
                 self._state = TrState.APPROACH_MUSTIKA
 
         elif self._state == TrState.DONE:
-            # 全ブロック+ムスティカを届け終えた。以降は何もせず停止する。
-            self.pub_cmd_vel.publish(Twist())
+            # 全ブロック+ムスティカを届け終えた。BRがムスティカを取れるよう退いて止まる
+            twist, _arrived = self._drive_on_ground(TR_PARK_POINT)
+            self.pub_cmd_vel.publish(twist)
 
 
 def main(args=None):

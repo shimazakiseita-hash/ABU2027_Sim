@@ -8,8 +8,8 @@ held_by, placed)。br_referee_node が /true_state/blocks に変換する処理�
 
 held_byは"none"|"tr"|"br"の文字列(TR/BRどちらが保持しているか)。単なるbool
 ではなく保持者を持たせているのは、受渡しエリアでTR/BRが近づいたときに
-どちらのgripper_pointで把持判定したかを区別し、他方のロボットが誤って
-奪い取ってしまう取り違えを防ぐため(update_holdingのholder_id引数参照)。
+どちらが把持しているかを区別し、他方のロボットが誤って奪い取ってしまう
+取り違えを防ぐため(把持の判定はsim_bridge_node._update_grasping)。
 
 座標系はfield_constants.pyのu,v(mm)をそのままpymunk座標として使う。
 L1/L2は物理的に独立した面ではなく同一平面上に重ねて表現するため、
@@ -36,19 +36,6 @@ _LEVEL_CATEGORY = {
     LEVEL_L2: 0b100,
 }
 
-# 把持判定の距離レンジ = ロボット半幅 + ブロックの半径相当 + 余裕。
-# gripper_pointにロボットの中心位置(robot_body.py参照、アーム等のオフセットは
-# 持たない簡略化)を使っているため、ロボットの700mm角footprintがブロックに
-# 接触した時点でのロボット中心-ブロック中心間距離(=ロボット半幅+ブロック半径)より
-# 把持レンジが小さいと、衝突で押し合うだけで永遠に把持判定に入れない
-# (br_decisionのTR/BR統合テストで発覚した不具合。修正済み)。
-# decision_common._BLOCK_APPROACH_MARGIN_MMと同じ値に保つこと(ロボットが
-# "到着"とみなす距離と、実際に把持が成立する距離を一致させるため)。
-# 統合テストで、密集したブロックの山に阻まれて数十mm足りず把持レンジに
-# 入れないケースが頻発したため、余裕を大きめに取っている。
-GRASP_MARGIN_MM = 150
-_ROBOT_HALF_WIDTH_MM = fc.ROBOT_INITIAL_MAX[0] / 2
-
 # 保持されていない(held_by=="none")ブロックに適用する速度減衰(1ステップごとの
 # 乗数)。space.gravity=(0,0)かつspace.dampingも既定値(=減衰なし)のままだと、
 # 衝突で弾かれたブロックが摩擦なしで永久に滑り続けてしまうため、卓上の摩擦相当
@@ -71,30 +58,19 @@ ROBOT_COLLISION_TYPE = 1
 EVER_HELD_BLOCK_COLLISION_TYPE = 2
 
 
+# フィールド外周の柵。ロボットだけでなくブロックも止める(ストレージが外周に接しているため、
+# 止めないとロボットが押したブロックが柵をすり抜けて場外へ出てしまう)
+BOUNDARY_CATEGORY = 0b1000000
+
+
 def level_filter(level: int) -> pymunk.ShapeFilter:
-    """指定階層のshapeとだけ衝突するフィルタ(異なる階層のブロックとは衝突しない)。"""
+    """指定階層のshapeとフィールド外周の柵とだけ衝突するフィルタ(異なる階層のブロックとは衝突しない)。"""
     category = _LEVEL_CATEGORY[level]
-    return pymunk.ShapeFilter(categories=category, mask=category)
+    return pymunk.ShapeFilter(categories=category, mask=category | BOUNDARY_CATEGORY)
 
 
 def _mass_kg(weight_range_g: tuple[int, int]) -> float:
     return sum(weight_range_g) / 2 / 1000
-
-
-def _block_half_size_mm(block_type: str) -> float:
-    if block_type == "earth":
-        return fc.EARTH_BLOCK_SIZE / 2
-    if block_type == "sky":
-        return fc.SKY_BLOCK_SIZE / 2
-    if block_type == "mustika":
-        return fc.MUSTIKA_DIAMETER / 2
-    raise ValueError(f"unknown block_type: {block_type}")
-
-
-def grasp_range_mm(block_type: str) -> float:
-    """複数の候補から把持対象を選ぶ側(sim_bridge_node._try_grasp)からも
-    参照するため公開関数にしてある。"""
-    return _ROBOT_HALF_WIDTH_MM + GRASP_MARGIN_MM + _block_half_size_mm(block_type)
 
 
 def _apply_free_block_damping(body: pymunk.Body) -> None:
@@ -191,23 +167,6 @@ class PhysicsBlock:
         """保持中のみ、グリッパー位置にブロックを追従させる(tickごとに呼ぶ想定)。"""
         if self.held_by != "none":
             self.body.position = gripper_point
-
-    def update_holding(self, gripper_point: tuple[float, float], gripper_open: bool, holder_id: str) -> None:
-        """
-        holder_id("tr"|"br")側のグリッパーcmd(open状態)と、そのgripper_pointからの
-        距離でheld_byを判定する。他方のロボットが既に保持しているブロックは、
-        既存の保持者が明示的に離す("none"にする)までholder_idが奪えないようにして、
-        受渡しエリアで両者が近づいたときの取り違えを防ぐ。
-        """
-        if gripper_open:
-            if self.held_by == holder_id:
-                self.set_held_by("none")
-            return
-        if self.held_by not in ("none", holder_id):
-            return  # 他方のロボットが保持中なので奪えない
-        distance = (self.body.position - gripper_point).length
-        if distance <= grasp_range_mm(self.block_type):
-            self.set_held_by(holder_id)
 
 
 def make_earth_block(

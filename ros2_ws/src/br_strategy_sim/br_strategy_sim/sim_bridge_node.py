@@ -14,13 +14,17 @@ bodyの速度に反映する。Twistの単位はROS標準(m/s, rad/s)のまま�
 MustikaPose, TowerArray)として発行する(真値の発行元はこのノード。
 br_referee_node/br_observation_nodeはこれを購読する)。
 
-/br_gripper_cmd, /tr_gripper_cmd を購読し、PhysicsBlock.update_holding
-経由でheld_byを判定する(取り違え防止のロジックはphysics_blocks.py参照)。
-/br_build_action を購読し、PLACE_EARTH_BLOCK/PLACE_SKY_BLOCKならBRが現在
+/br_gripper_cmd, /tr_gripper_cmd を購読し、機体仕様(config/robot_spec.yaml)の
+把持時間・解放時間をかけてheld_byを判定する(_update_grasping参照)。
+/br_build_action を購読し、機体仕様の動作時間をかけて(_update_build_job参照)、
+PLACE_EARTH_BLOCK/PLACE_SKY_BLOCKならBRが現在
 保持しているブロックを対象の建築スポットへ実際に配置し(位置・levelを更新、
 held_by="none"・placed=True)、FLIP_SKY_BLOCKなら既に設置済みの最上段
 スカイブロックの上面色を反転する(ルールブック3.5.8のタワー"stealing")。
 いずれも/true_state/tower_stateへ反映する。
+
+ロボットの加減速・旋回の上限と、柵(field_geometry.WALL_SEGMENTS)・地形による
+階層と速度倍率は、物理ステップごとに反映する(_step_physics, robot_body.py参照)。
 
 重要な前提: heldブロックはKINEMATICに切り替えて直接追従させる設計
 (physics_blocks.py参照)なので、壁や他ブロックとの物理衝突をすり抜けられる。
@@ -45,6 +49,8 @@ cmd_vel/gripper_cmd/build_actionの処理を一切行わずTR/BRの速度を強�
 
 from __future__ import annotations
 
+import math
+
 import pymunk
 import rclpy
 from geometry_msgs.msg import Point, Pose2D, Twist
@@ -54,25 +60,26 @@ from std_msgs.msg import Bool
 from br_msgs.msg import Block, BlockArray, BuildAction, GripperCmd, MustikaPose, RobotPose, TowerArray, TowerState
 
 from . import field_constants as fc
+from . import field_geometry as fg
 from .physics_blocks import (
     EVER_HELD_BLOCK_COLLISION_TYPE,
     LEVEL_GROUND,
     LEVEL_L2,
     ROBOT_COLLISION_TYPE,
     PhysicsBlock,
-    grasp_range_mm,
     make_earth_block,
     make_mustika,
     make_sky_block,
 )
-from .robot_body import RobotBody, make_robot_body
+from .robot_body import M_TO_MM, RobotBody, make_robot_body, robot_only_filter, wall_filter
+from .robot_spec import declare_robot_specs
 
 PHYSICS_HZ = 60.0
-M_TO_MM = 1000.0
 
-# BR/TRのfootprint(700mm角)同士がスタートゾーン境界で密着しないための余裕。
-# 実際の大会では審判が手動配置するため密着はあり得ない想定の近似値。
-START_SPAWN_GAP_MM = 200.0
+# 柵(フィールド外周等)の太さ。ロボットとだけ衝突する
+WALL_THICKNESS_MM = 10.0
+# スタートゾーンに置くとき、柵や隣のロボットと重ならないための隙間
+START_SPAWN_CLEARANCE_MM = 10.0
 
 # ストレージのアースブロック配置: 2D物理では実寸(350mm角)通りの2段積みを
 # 表現できないため、1段に並べて配置する簡略化(要調整)。ピッチは350mm角の
@@ -170,16 +177,20 @@ class SimBridgeNode(Node):
             pre_solve=_ignore_ever_held_block_vs_robot,
         )
 
-        br_start = (
-            fc.START_ZONE_1_ORIGIN[0] + fc.START_ZONE_SIZE[0] / 2 - START_SPAWN_GAP_MM / 2,
-            fc.START_ZONE_1_ORIGIN[1] + fc.START_ZONE_SIZE[1] / 2,
-        )
-        tr_start = (
-            fc.START_ZONE_2_ORIGIN[0] + fc.START_ZONE_SIZE[0] / 2 + START_SPAWN_GAP_MM / 2,
-            fc.START_ZONE_2_ORIGIN[1] + fc.START_ZONE_SIZE[1] / 2,
-        )
-        self.br: RobotBody = make_robot_body(self.space, 'br', br_start, LEVEL_GROUND)
-        self.tr: RobotBody = make_robot_body(self.space, 'tr', tr_start, LEVEL_GROUND)
+        self._specs = declare_robot_specs(self)
+        # スタートゾーン(原点の角から2個並ぶ)に、外周の柵と互いに重ならないよう置く。
+        # どちらをTR/BRに使うかはチームの選択で、角側にTR(北のストレージへまっすぐ
+        # 向かう)、その隣にBR(北東のL1階段へ向かう)を置くと出だしの経路が交差しない
+        br_half = self._specs['br'].half_width_mm
+        tr_half = self._specs['tr'].half_width_mm
+        edge = WALL_THICKNESS_MM / 2 + START_SPAWN_CLEARANCE_MM
+        tr_start = (edge + tr_half, edge + tr_half)
+        br_start = (tr_start[0] + tr_half + START_SPAWN_CLEARANCE_MM + br_half, edge + br_half)
+        self.br: RobotBody = make_robot_body(
+            self.space, 'br', br_start, LEVEL_GROUND, self._specs['br'], fc.ROBOT_WEIGHT_MAX_KG)
+        self.tr: RobotBody = make_robot_body(
+            self.space, 'tr', tr_start, LEVEL_GROUND, self._specs['tr'], fc.ROBOT_WEIGHT_MAX_KG)
+        self._add_static_field()
 
         self.blocks: list[PhysicsBlock] = []
         self.blocks += _spawn_storage_earth_blocks(self.space)
@@ -192,6 +203,12 @@ class SimBridgeNode(Node):
         # 閉じる際に狙う対象ブロックid(空文字ならレンジ内最近傍にフォールバック)
         self._br_gripper_target_id = ''
         self._tr_gripper_target_id = ''
+
+        # 機構の動作時間: 把持の進み具合(対象id, 経過秒)と、解放の経過秒
+        self._grasp_progress: dict[str, tuple[str, float] | None] = {'tr': None, 'br': None}
+        self._release_elapsed = {'tr': 0.0, 'br': 0.0}
+        # 実行中のBuildAction({'action', 'elapsed', 'duration'})。_update_build_job参照
+        self._build_job: dict | None = None
 
         # /br_build_actionの処理待ちキューと、建築スポットごとの積み上げ状態
         # (build_spot_id -> {"level": int, "team": str, "blocks": [(block_type, top_color), ...]})
@@ -244,23 +261,40 @@ class SimBridgeNode(Node):
         # 発行されないが念のため単調にしておく)
         self._match_ended = self._match_ended or msg.data
 
+    def _add_static_field(self) -> None:
+        """柵(field_geometry.WALL_SEGMENTS)と、ロボットごとの通れない地形を静的形状として置く。"""
+        static = self.space.static_body
+        for kind, p0, p1 in fg.WALL_SEGMENTS:
+            segment = pymunk.Segment(static, p0, p1, WALL_THICKNESS_MM / 2)
+            segment.filter = wall_filter(kind)
+            segment.friction = 0.5
+            self.space.add(segment)
+        for robot in (self.tr, self.br):
+            for (u0, v0), (w, h) in fg.forbidden_terrain_rects(robot.spec):
+                poly = pymunk.Poly(static, [(u0, v0), (u0 + w, v0), (u0 + w, v0 + h), (u0, v0 + h)])
+                poly.filter = robot_only_filter(robot.robot_id)
+                self.space.add(poly)
+
     def _step_physics(self) -> None:
-        self.space.step(1.0 / PHYSICS_HZ)
+        dt = 1.0 / PHYSICS_HZ
         if self._match_ended:
             # 9.4.1: ロボットは直ちに停止。以後の指令(cmd_vel/gripper/
             # build_action)は一切反映しない(得点はbr_referee_node側で
             # ブザーの瞬間の状態を使って既に確定している)。
-            self.br.set_cmd_vel(0.0, 0.0, 0.0)
-            self.tr.set_cmd_vel(0.0, 0.0, 0.0)
+            self.br.stop_now()
+            self.tr.stop_now()
+            self.space.step(dt)
             self._publish_true_state()
             return
-        # BuildActionの実行を先に行う: br_decisionはRELEASE_AND_BUILD状態で
-        # BuildActionとgripper open(release)を同一tickで送るため、
-        # _update_grasping()を先に呼ぶとgripper open処理でheld_by="none"に
-        # なってしまい、直後のBuildAction実行時に「BRが何も保持していない」
-        # と判定されてビルドが成立しない(統合テストで発覚)。
-        self._execute_pending_build_action()
-        self._update_grasping()
+        for robot in (self.br, self.tr):
+            u, v = robot.position
+            robot.set_level(fg.level_at(u, v))
+            robot.step(dt, fg.speed_scale_at(robot.spec, u, v))
+        self.space.step(dt)
+        # 建築の進行を把持の更新より先に処理する: 設置中はBRのグリッパー開指令を
+        # 無視する(機構が動作中)ので、その判定に今回のtickの建築状態を使うため
+        self._update_build_job(dt)
+        self._update_grasping(dt)
         self._publish_true_state()
         self._enforce_out_of_bounds()
 
@@ -296,75 +330,131 @@ class SimBridgeNode(Node):
             self.mustika.set_level(LEVEL_GROUND)
             self.mustika.placed = False
 
-    def _update_grasping(self) -> None:
+    def _update_grasping(self, dt: float) -> None:
         """
-        TR/BRそれぞれ同時に1個しか保持できないようにする。グリッパーが
-        閉じている場合、GripperCmd.target_block_idで指定された特定の1個
-        だけを対象に把持判定する(_try_grasp参照)。
+        TR/BRそれぞれ同時に1個しか保持できない。グリッパーが閉じていて、対象が
+        把持レンジ(機体仕様のgrasp_range_mm)内にある状態がgrasp_time_s続いたら保持し、
+        保持中に開いている状態がrelease_time_s続いたら手を離す。設置済み(placed)の
+        物はつかめない(置いた直後に閉じたままのグリッパーで再びつかまないように)。
 
-        以前は「距離だけで最も近い1個」を推測で選んでいたが、これだと
-        以下のような取り違えが起こり得た:
-        - グラウンド共用エリアのスカイブロック格子(240mmピッチ)は把持レンジ
-          (600mm)より隣接間隔が狭く、意思決定ノードが実際に狙っている
-          ブロックの隣にある別のブロックの方が僅かに近いだけで誤って
-          選ばれてしまう
-        - ブロック種別ごとに把持レンジが異なるため、距離だけでnearestを
-          決めると、意思決定ノードが実際に接近している対象(その種別の
-          レンジ内)より、レンジ外の別種別のブロックの方が近いというだけで
-          選ばれてしまう
-        - 共用エリア内の衝突で弾かれて偶然ブロック搬送経路の近くまで転がって
-          きたムスティカを、搬送中のグリッパー閉状態のロボットが意図せず
-          掴んでしまう
-        いずれも複数塔の統合テストで発覚した。意思決定ノード自身が
-        /detected_blocksで対象のidを既に把握しているため、そのidを
-        GripperCmdに乗せて物理層に直接伝える方が、距離ベースの推測より
-        堅牢(target_block_idが空文字の場合のみ、後方互換としてレンジ内
-        最近傍へのフォールバックを行う)。
+        対象はGripperCmd.target_block_idで指定された1個に限る。以前は距離だけで最も
+        近い1個を推測していたが、スカイ格子(240mmピッチ)で隣のブロックを取り違える、
+        種別ごとにレンジが違うのでレンジ外の別種別を選ぶ、搬送中に転がってきた
+        ムスティカを掴む、といった取り違えが統合テストで発覚したため。空文字の場合のみ
+        後方互換としてレンジ内最近傍にフォールバックする。
         """
         all_blocks = [*self.blocks, self.mustika]
-        self._try_grasp(all_blocks, self.br.position, self._br_gripper_open, 'br', self._br_gripper_target_id)
-        self._try_grasp(all_blocks, self.tr.position, self._tr_gripper_open, 'tr', self._tr_gripper_target_id)
-
+        self._update_robot_gripper(self.br, all_blocks, self._br_gripper_open, self._br_gripper_target_id, dt)
+        self._update_robot_gripper(self.tr, all_blocks, self._tr_gripper_open, self._tr_gripper_target_id, dt)
         for pblock in all_blocks:
             if pblock.held_by == 'br':
                 pblock.follow_gripper(self.br.position)
             elif pblock.held_by == 'tr':
                 pblock.follow_gripper(self.tr.position)
 
-    @staticmethod
-    def _try_grasp(all_blocks, gripper_point, gripper_open: bool, holder_id: str, target_block_id: str) -> None:
-        holding = next((b for b in all_blocks if b.held_by == holder_id), None)
-        if gripper_open:
-            if holding is not None:
-                holding.update_holding(gripper_point, True, holder_id)
-            return
+    def _update_robot_gripper(self, robot: RobotBody, all_blocks, gripper_open: bool, target_id: str,
+                              dt: float) -> None:
+        rid = robot.robot_id
+        holding = next((b for b in all_blocks if b.held_by == rid), None)
         if holding is not None:
-            return  # 既に何か保持中なら新たに掴みにいかない
-        candidates = [b for b in all_blocks if b.held_by == 'none']
-        if not candidates:
+            self._grasp_progress[rid] = None
+            placing = (rid == 'br' and self._build_job is not None
+                       and self._build_job['action'].action_type != 'FLIP_SKY_BLOCK')
+            if gripper_open and not placing:
+                self._release_elapsed[rid] += dt
+                if self._release_elapsed[rid] >= robot.spec.release_time_s:
+                    holding.set_held_by('none')
+                    self._release_elapsed[rid] = 0.0
+            else:
+                self._release_elapsed[rid] = 0.0
             return
-        if target_block_id:
-            target = next((b for b in candidates if b.id == target_block_id), None)
-            if target is not None:
-                target.update_holding(gripper_point, False, holder_id)
+        self._release_elapsed[rid] = 0.0
+        target = None if gripper_open else self._grasp_target(robot, all_blocks, target_id)
+        if target is None:
+            self._grasp_progress[rid] = None
             return
-        # target_block_id未指定時のみ、後方互換としてレンジ内最近傍にフォールバックする。
-        candidates.sort(key=lambda b: (b.body.position - gripper_point).length)
-        for candidate in candidates:
-            distance = (candidate.body.position - gripper_point).length
-            if distance <= grasp_range_mm(candidate.block_type):
-                candidate.update_holding(gripper_point, False, holder_id)
-                return
+        progress = self._grasp_progress[rid]
+        elapsed = (progress[1] if progress and progress[0] == target.id else 0.0) + dt
+        if elapsed >= robot.spec.grasp_time_s:
+            target.set_held_by(rid)
+            self._grasp_progress[rid] = None
+        else:
+            self._grasp_progress[rid] = (target.id, elapsed)
 
-    def _execute_pending_build_action(self) -> None:
+    @staticmethod
+    def _grasp_target(robot: RobotBody, all_blocks, target_id: str) -> PhysicsBlock | None:
+        def in_range(b: PhysicsBlock) -> bool:
+            return (b.body.position - robot.position).length <= robot.spec.grasp_range_mm(b.block_type)
+
+        candidates = [b for b in all_blocks if b.held_by == 'none' and not b.placed]
+        if target_id:
+            target = next((b for b in candidates if b.id == target_id), None)
+            return target if target is not None and in_range(target) else None
+        in_reach = [b for b in candidates if in_range(b)]
+        return min(in_reach, key=lambda b: (b.body.position - robot.position).length, default=None)
+
+    def _update_build_job(self, dt: float) -> None:
         """
-        /br_build_actionを実行する。action_typeは以下の4種類:
+        /br_build_actionを機体仕様の動作時間(place_time_s/flip_time_s)をかけて実行する。
+        受け付けるのは、BRが対象(建築スポット、ムスティカなら中央の柱)の近くにいて、
+        必要な物を持っている(裏返しなら塔の一番上がスカイ)ときだけ。実行中は新しい
+        指令を受け付けず、途中で条件が崩れたら(離れた等)中止する。意思決定ノードは
+        完了まで同じ指令を送り続けるので、完了後に届いた再送は条件を満たさず捨てられる。
+        """
+        if self._build_job is None:
+            action = self._pending_build_action
+            self._pending_build_action = None
+            if action is None:
+                return
+            duration = self._build_duration(action)
+            if duration is None:
+                return
+            self._build_job = {'action': action, 'elapsed': 0.0, 'duration': duration}
+        else:
+            self._pending_build_action = None
+            if self._build_duration(self._build_job['action']) is None:
+                self._build_job = None
+                return
+        job = self._build_job
+        job['elapsed'] += dt
+        if job['elapsed'] >= job['duration']:
+            self._build_job = None
+            self._complete_build_action(job['action'])
+
+    def _build_duration(self, action: BuildAction) -> float | None:
+        """actionを今実行できるならその所要時間(秒)、できないならNone。"""
+        spec = self.br.spec
+        near_mm = spec.half_width_mm + spec.grasp_reach_mm + fc.BUILD_SPOT_SIZE[0] / 2
+
+        def near(point) -> bool:
+            return math.dist((self.br.position.x, self.br.position.y), point) <= near_mm
+
+        if action.action_type == 'PLACE_MUSTIKA':
+            ok = self.mustika.held_by == 'br' and near((fc.FIELD_CENTER, fc.FIELD_CENTER))
+            return spec.place_time_s if ok else None
+        target = _build_spot_by_id(action.target_build_spot_id)
+        if target is None:
+            return None
+        spot_id, _level, _team, origin = target
+        if not near((origin[0] + fc.BUILD_SPOT_SIZE[0] / 2, origin[1] + fc.BUILD_SPOT_SIZE[1] / 2)):
+            return None
+        if action.action_type == 'FLIP_SKY_BLOCK':
+            tower = self._towers.get(spot_id)
+            ok = bool(tower and tower['blocks'] and tower['blocks'][-1].block_type == 'sky')
+            return spec.flip_time_s if ok else None
+        if action.action_type in ('PLACE_EARTH_BLOCK', 'PLACE_SKY_BLOCK'):
+            ok = any(b.held_by == 'br' for b in self.blocks)
+            return spec.place_time_s if ok else None
+        return None
+
+    def _complete_build_action(self, action: BuildAction) -> None:
+        """
+        所要時間を経過したBuildActionの結果を反映する。action_typeは以下の4種類:
         - PLACE_EARTH_BLOCK / PLACE_SKY_BLOCK: BRが現在保持しているブロックを
           対象の建築スポットへ配置する(block_typeとの厳密な整合性チェックは
           行わない。Phase1最初のゴールに向けた簡略化。要調整)。
         - FLIP_SKY_BLOCK: 対象の建築スポットに既に設置されている(最上段の)
-          スカイブロックの上面色を反転する(ルールブック3.5.8の"stealing"。
-          BRが保持している必要はなく、位置的な近さも今は問わない簡略化)。
+          スカイブロックの上面色を反転する(ルールブック3.5.8の"stealing")。
         - PLACE_MUSTIKA: BRが保持しているムスティカを中央支柱(FIELD_CENTER,
           レベルL2)へ設置する(8.5)。建築スポットではなく専用のセントラル
           ピラーが対象のため、target_build_spot_idは無視して先に処理する。
@@ -373,11 +463,6 @@ class SimBridgeNode(Node):
         (block_types/owner_teams/top_colorsはtower_state発行時に毎回そこから
         導出するので、スカイブロックをひっくり返した結果が即座に反映される)。
         """
-        if self._pending_build_action is None:
-            return
-        action = self._pending_build_action
-        self._pending_build_action = None
-
         if action.action_type == 'PLACE_MUSTIKA':
             if self.mustika.held_by != 'br':
                 return

@@ -1,9 +1,9 @@
 """
-br_decision_tr_node / br_decision_br_nodeで共通して使う簡易移動コントローラ。
+br_decision_tr_node / br_decision_br_nodeで共通して使う移動・受渡しの補助。
 
-経路計画や障害物回避は行わない、目標点への直線的な速度指令を返すだけの
-最小実装(最初のゴールである「アースブロック1個をTR->BR->建築スポットへ
-運ぶ」ループを通すための割り切り。要調整)。
+移動そのもの(経路計画と追従)はnavigation.Navigatorが行う。ここには、受渡しの
+待ち合わせ位置、秘蹟の要件の判定、目標のすぐ近くでの微調整用のdrive_towardを置く。
+速度・加速度・到着距離は機体仕様(robot_spec.RobotSpec)から取る。
 """
 
 from __future__ import annotations
@@ -14,23 +14,7 @@ from geometry_msgs.msg import Twist
 
 from . import field_constants as fc
 
-CRUISE_SPEED_M_S = 0.3
 ARRIVAL_THRESHOLD_MM = 150.0
-
-# ロボット中心-ブロック中心間で実際に到達できる最短距離の余裕。
-# physics_blocks.GRASP_MARGIN_MMと同じ考え方(ロボットは無視できない大きさの
-# footprintを持つので、ブロックへ"到着"したとみなす距離はブロック中心そのもの
-# ではなく、ロボット半幅+ブロック半径相当まで)。
-_ROBOT_HALF_WIDTH_MM = fc.ROBOT_INITIAL_MAX[0] / 2
-# physics_blocks.GRASP_MARGIN_MMと同じ値に保つこと
-_BLOCK_APPROACH_MARGIN_MM = 150.0
-
-
-def block_arrival_threshold_mm(block_half_size_mm: float) -> float:
-    """ブロック(半径相当block_half_size_mm)に物理的に接触できる距離を返す。
-    ロボット自身の中心を"グリッパー位置"として使う簡略化のため、ブロック中心
-    そのものには到達できない(physics_blocks._grasp_range_mmと同じ考え方)。"""
-    return _ROBOT_HALF_WIDTH_MM + _BLOCK_APPROACH_MARGIN_MM + block_half_size_mm
 
 
 def transfer_area_rect() -> tuple[tuple[float, float], tuple[float, float]]:
@@ -41,33 +25,27 @@ def point_in_rect(x: float, y: float, origin: tuple[float, float], size: tuple[f
     return origin[0] <= x <= origin[0] + size[0] and origin[1] <= y <= origin[1] + size[1]
 
 
-# TR/BRが受渡しエリア内で完全に同じ点を目指すと、ロボット同士(700mm角)が
-# 正面衝突して想定位置から押し出されてしまう(統合テストで発覚: 受渡し後に
-# BRが把持レンジ外まで押し出され、いつまでも受渡しブロックを掴めなかった)。
-# エリア境界内(1000x1000mm)に収まる範囲で、TR/BRそれぞれに少しずらした
-# 待ち合わせ地点を与えて正面衝突を避ける。
-_TRANSFER_TARGET_OFFSET_MM = 350.0
-
 # tr_transfer_release_point/br_transfer_wait_pointへの接近には、デフォルトの
-# ARRIVAL_THRESHOLD_MM(150mm)ではなくこちらを使うこと。エリア境界までの余裕
-# (500 - _TRANSFER_TARGET_OFFSET_MM = 150mm)とARRIVAL_THRESHOLD_MMがちょうど
-# 同値だと、到着判定が成立する瞬間の位置によってはブロック/ムスティカの解放
-# 位置が境界ギリギリ外側になり得て、受け手側のpoint_in_rect判定が恒久的に
-# 満たされず無限待機してしまう(複数塔+ムスティカの統合テストで、6回中1回の
-# 頻度で発覚)。余裕を十分に残すため、この接近だけはより小さい閾値を使う。
+# ARRIVAL_THRESHOLD_MM(150mm)ではなくこちらを使うこと。到着判定が成立する
+# 瞬間の位置によってはブロック/ムスティカの解放位置が受渡しエリアの境界
+# ギリギリになり得て、受け手側のpoint_in_rect判定が恒久的に満たされず
+# 無限待機してしまう(複数塔+ムスティカの統合テストで発覚)ため、小さい閾値を使う。
 TRANSFER_POINT_ARRIVAL_THRESHOLD_MM = 80.0
 
 
+def _transfer_center() -> tuple[float, float]:
+    origin, size = transfer_area_rect()
+    return (origin[0] + size[0] / 2, origin[1] + size[1] / 2)
+
+
 def tr_transfer_release_point() -> tuple[float, float]:
-    origin, size = transfer_area_rect()
-    center = (origin[0] + size[0] / 2, origin[1] + size[1] / 2)
-    return (center[0] - _TRANSFER_TARGET_OFFSET_MM, center[1] - _TRANSFER_TARGET_OFFSET_MM)
+    """TRが物を置く位置。受渡しエリアは幅1000mmで車体1台分しか入らないので中央。"""
+    return _transfer_center()
 
 
-def br_transfer_wait_point() -> tuple[float, float]:
-    origin, size = transfer_area_rect()
-    center = (origin[0] + size[0] / 2, origin[1] + size[1] / 2)
-    return (center[0] + _TRANSFER_TARGET_OFFSET_MM, center[1] + _TRANSFER_TARGET_OFFSET_MM)
+def br_transfer_wait_point(br_spec) -> tuple[float, float]:
+    """BRの待ち位置。TRとぶつからないよう、受渡しエリアに面したL1の開口のすぐ内側で待つ。"""
+    return (fc.L1_ORIGIN[0] + br_spec.half_width_mm + 150.0, _transfer_center()[1])
 
 
 _SHARED_BUILD_SPOT_IDS = {spot_id for spot_id, _level, team, _origin in fc.BUILD_SPOTS if team == ''}
@@ -86,67 +64,22 @@ def sanctuary_mandate_satisfied(towers, required_layers: int) -> bool:
     return any(t.level == 2 or t.build_spot_id in _SHARED_BUILD_SPOT_IDS for t in complete)
 
 
-# 6.2.1: TRはL1/L2の鉛直境界内に入れない(4.3.3: ロボットのどの部分も)。ロボット
-# 中心がL1をロボット半幅だけ膨らませた矩形に入らなければ、車体はL1に掛からない
-_L1_KEEP_OUT_MARGIN_MM = _ROBOT_HALF_WIDTH_MM
-# 回り込むときの経由点は、上の禁止矩形からさらに余裕を持たせたL1の角の外側
-_L1_DETOUR_MARGIN_MM = _ROBOT_HALF_WIDTH_MM + 250.0
-
-
-def _segment_hits_rect(p0, p1, rect_min, rect_max) -> bool:
-    """線分p0-p1が軸平行矩形(rect_min-rect_max)の内部を通るか(Liang-Barsky法)。"""
-    t0, t1 = 0.0, 1.0
-    d = (p1[0] - p0[0], p1[1] - p0[1])
-    for axis in (0, 1):
-        for p, q in ((-d[axis], p0[axis] - rect_min[axis]), (d[axis], rect_max[axis] - p0[axis])):
-            if p == 0.0:
-                if q < 0.0:
-                    return False
-                continue
-            t = q / p
-            if p < 0.0:
-                t0 = max(t0, t)
-            else:
-                t1 = min(t1, t)
-            if t0 > t1:
-                return False
-    return True
-
-
-def tr_route_waypoint(current_uv: tuple[float, float], target_uv: tuple[float, float]) -> tuple[float, float]:
-    """
-    TRがtarget_uvへ直進するとL1を横切る(6.2.1違反)場合、L1の角の外側を回り込む
-    経由点を返す。横切らないならtarget_uvをそのまま返す。毎tick呼び直す前提で、
-    経由点に近づくと直進がL1に掛からなくなり、自然に本来の目標へ切り替わる。
-    """
-    m = _L1_KEEP_OUT_MARGIN_MM
-    rect_min = (fc.L1_ORIGIN[0] - m, fc.L1_ORIGIN[1] - m)
-    rect_max = (fc.L1_ORIGIN[0] + fc.L1_SIZE + m, fc.L1_ORIGIN[1] + fc.L1_SIZE + m)
-    if not _segment_hits_rect(current_uv, target_uv, rect_min, rect_max):
-        return target_uv
-    dm = _L1_DETOUR_MARGIN_MM
-    corners = [
-        (u, v)
-        for u in (fc.L1_ORIGIN[0] - dm, fc.L1_ORIGIN[0] + fc.L1_SIZE + dm)
-        for v in (fc.L1_ORIGIN[1] - dm, fc.L1_ORIGIN[1] + fc.L1_SIZE + dm)
-    ]
-    reachable = [c for c in corners if not _segment_hits_rect(current_uv, c, rect_min, rect_max)]
-    return min(reachable or corners,
-               key=lambda c: math.dist(current_uv, c) + math.dist(c, target_uv))
-
-
 def drive_toward(
     current_uv: tuple[float, float],
     target_uv: tuple[float, float],
+    spec,
     arrival_threshold_mm: float = ARRIVAL_THRESHOLD_MM,
 ) -> tuple[Twist, bool]:
-    """current_uvからtarget_uvへ向かう速度指令(Twist, m/s)を返す。2値目は到着済みか。"""
+    """current_uvからtarget_uvへ直進する速度指令(Twist, m/s)と、到着済みかを返す。
+    柵を考えないので、物をつかむ直前など目標のすぐ近くでだけ使う(遠くへはNavigatorを使う)。
+    上限加速度で止まりきれる速さまで手前から減速する。"""
     dx = target_uv[0] - current_uv[0]
     dy = target_uv[1] - current_uv[1]
     distance = math.hypot(dx, dy)
     twist = Twist()
     if distance <= arrival_threshold_mm:
         return twist, True
-    twist.linear.x = (dx / distance) * CRUISE_SPEED_M_S
-    twist.linear.y = (dy / distance) * CRUISE_SPEED_M_S
+    speed = min(spec.max_speed_m_s, math.sqrt(2.0 * spec.max_accel_m_s2 * distance / 1000.0))
+    twist.linear.x = (dx / distance) * speed
+    twist.linear.y = (dy / distance) * speed
     return twist, False

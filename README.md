@@ -96,6 +96,29 @@ python3に正しくインストールされる。
 複数指定する場合は空白区切りでそのまま並べればよい
 （例: `./tools/sim_start.sh team:=blue observation_noise:=true`）。
 
+### 機体仕様（速度・寸法・動作時間）
+
+TR/BRの機体の数値は `ros2_ws/src/br_strategy_sim/config/robot_spec.yaml` に
+まとめてある。シム（ロボットの動き）、意思決定ノード（速度・到着判定・待ち時間・
+通れる道の計画）、操縦コンソール、審判がすべてこのファイルを読む。現在の値は
+**仮値**で、機体要件が決まったらここを書き換えて再ビルドすれば反映される。
+ビルドせずに別の値を試すときは、ファイルをコピーして起動引数で渡す:
+
+```bash
+./tools/sim_start.sh robot_spec_file:=/path/to/my_robot_spec.yaml
+```
+
+| 項目 | 意味 |
+|---|---|
+| `footprint_mm` | 車体の長さ x 幅 |
+| `max_speed_m_s` / `max_accel_m_s2` | 平地での最高速度 / 加減速の上限 |
+| `max_yaw_rate_rad_s` / `max_yaw_accel_rad_s2` | 旋回速度 / 旋回の加減速の上限 |
+| `ramp_speed_scale` / `stairs_speed_scale` | スロープ / 階段上での速度倍率 |
+| `can_use_ramp` / `can_use_stairs` | スロープ / 階段を通れるか（通れない地形は経路計画が避け、シムでも入れない） |
+| `grasp_reach_mm` | 車体の縁からどこまで離れた物をつかめるか |
+| `grasp_time_s` / `release_time_s` | つかむ / はなすのにかかる時間 |
+| `place_time_s` / `flip_time_s` | 建築スポットに置く（ムスティカを柱に置く）/ スカイを裏返すのにかかる時間（BR） |
+
 ### 手動操縦（デバッグ用）
 
 `enable_teleop:=true`で起動した操縦コンソールのウィンドウで操作する。
@@ -177,6 +200,9 @@ python3 -m pytest ros2_ws/src/br_strategy_sim/test/ -v
   - `br_visualizer_node` — デバッグ用pygame可視化
   - `br_decision_tr_node` / `br_decision_br_node` — TR/BRの意思決定ロジック
   - `br_teleop_node` — キーボード手動操縦コンソール（デバッグ用、`enable_teleop:=true`）
+  - `robot_spec.py` — 機体仕様（`config/robot_spec.yaml`）の読み込み
+  - `field_geometry.py` — 柵と地形（段差・スロープ・階段）の簡易モデル
+  - `navigation.py` — 意思決定ノード用の経路計画（格子A*）と経路追従
   - `field_constants.py` / `physics_blocks.py` / `robot_body.py` /
     `field_drawing.py` / `decision_common.py` — 共通の定数・物理・描画ロジック
 

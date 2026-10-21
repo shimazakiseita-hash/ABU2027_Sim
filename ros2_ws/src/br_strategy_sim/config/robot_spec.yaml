@@ -1,0 +1,37 @@
+# TR/BRの機体仕様。シム(sim_bridge_node)・意思決定ノード・操縦コンソール・審判が
+# このファイルを読む。別のファイルを使うときは起動引数 robot_spec_file:=<パス> で指定する。
+#
+# 現在の値はすべて仮値。機体要件が決まったらここを書き換えれば、シムの動きと
+# 意思決定ノードの動き(速度・到着判定・待ち時間・通れる道)の両方に反映される。
+
+tr:
+  footprint_mm: [700, 700]      # 車体の長さ x 幅(ルールブックの初期寸法上限 700x700)
+  max_speed_m_s: 0.3            # 平地での最高速度
+  max_accel_m_s2: 0.5           # 加減速の上限
+  max_yaw_rate_rad_s: 1.5       # 旋回速度の上限
+  max_yaw_accel_rad_s2: 3.0     # 旋回の加減速の上限
+  ramp_speed_scale: 0.6         # スロープ上の速度倍率
+  stairs_speed_scale: 0.3       # 階段上の速度倍率
+  can_use_ramp: true            # スロープを通れるか
+  can_use_stairs: false         # 階段を通れるか(ルール4.3.2で階段はBRの道として書かれているため仮にfalse)
+  grasp_reach_mm: 150           # 車体の縁からどこまで離れた物をつかめるか
+  grasp_time_s: 1.0             # つかみ始めてから保持できるまで
+  release_time_s: 0.5           # はなし始めてから手を離れるまで
+  place_time_s: 0.0             # TRは建築しない
+  flip_time_s: 0.0
+
+br:
+  footprint_mm: [700, 700]
+  max_speed_m_s: 0.3
+  max_accel_m_s2: 0.5
+  max_yaw_rate_rad_s: 1.5
+  max_yaw_accel_rad_s2: 3.0
+  ramp_speed_scale: 0.6
+  stairs_speed_scale: 0.3
+  can_use_ramp: true
+  can_use_stairs: true
+  grasp_reach_mm: 150
+  grasp_time_s: 1.0
+  release_time_s: 0.5
+  place_time_s: 2.0             # 建築スポットへ置く(ムスティカを中央の柱へ置くのも同じ)
+  flip_time_s: 2.0              # 塔の一番上のスカイを裏返す

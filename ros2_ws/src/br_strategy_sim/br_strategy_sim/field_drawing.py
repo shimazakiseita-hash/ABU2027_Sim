@@ -17,6 +17,7 @@ import os
 import pygame
 
 from . import field_constants as fc
+from . import field_geometry as fg
 
 MARGIN = 60
 SCALE = 0.09  # 1mm -> 0.09px  (11000mm -> 約990px)
@@ -31,15 +32,17 @@ COLOR_LABEL_BG = (255, 255, 255, 190)
 COLOR_GROUND = {fc.TeamColor.RED: (240, 210, 210), fc.TeamColor.BLUE: (170, 210, 230)}
 COLOR_STORAGE_EDGE = {fc.TeamColor.RED: (205, 150, 150), fc.TeamColor.BLUE: (110, 160, 195)}
 COLOR_L1 = {fc.TeamColor.RED: (235, 180, 160), fc.TeamColor.BLUE: (150, 215, 220)}
-COLOR_L1_BARRIER = (190, 190, 185)
 COLOR_L2 = (190, 190, 185)
-COLOR_L2_EDGE = (140, 140, 135)
 COLOR_START = (223, 34, 34)
 COLOR_START_BLUE = (50, 0, 255)
 COLOR_SHARED = (245, 240, 200)
 COLOR_BUILD_SPOT = (40, 100, 50)
 COLOR_PILLAR = (100, 62, 0)
 COLOR_BOUNDARY = (100, 62, 0)
+# 段差の縁の柵(ロボットが越えられない線)。公式のL1/L2側壁(190-190-185)は床と
+# 見分けにくいので、通れる開口が分かるよう濃くして描く
+COLOR_BARRIER = (95, 90, 88)
+_WALL_STYLE = {'boundary': (COLOR_BOUNDARY, 4), 'divider': (COLOR_BOUNDARY, 3), 'barrier': (COLOR_BARRIER, 3)}
 COLOR_TRANSFER = {fc.TeamColor.RED: (245, 170, 60), fc.TeamColor.BLUE: (60, 170, 245)}
 COLOR_RAMP = {fc.TeamColor.RED: (200, 150, 140), fc.TeamColor.BLUE: (130, 180, 200)}
 # 階段(L1/L2とも)は公式にはその段のL1と同じ色。段の境目が見えるよう線を引く
@@ -155,19 +158,11 @@ def _draw_stairs(surface, color, origin, size, steps, along_u):
     draw_rect_mm(surface, COLOR_STAIR_EDGE, origin, size, width=1)
 
 
-def _draw_center_divider(surface):
-    """中央の仕切り(グラウンドとL1の中心線)。L2と、中央線上の共用エリアの部分は途切れる。"""
-    gaps = [
-        (fc.GROUND_SHARED_AREA_ORIGIN[1], fc.GROUND_SHARED_AREA_ORIGIN[1] + fc.GROUND_SHARED_AREA_SIZE[1]),
-        (fc.L2_ORIGIN[1], fc.L2_ORIGIN[1] + fc.L2_SIZE),
-        (fc.MUSTIKA_SHARED_AREA_ORIGIN[1], fc.MUSTIKA_SHARED_AREA_ORIGIN[1] + fc.MUSTIKA_SHARED_AREA_SIZE[1]),
-        *((o[1], o[1] + fc.L1_SHARED_AREA_SIZE[1]) for o in fc.L1_SHARED_AREA_ORIGINS),
-    ]
-    v = 0.0
-    for start, end in sorted(gaps) + [(fc.GAME_FIELD_SIZE, fc.GAME_FIELD_SIZE)]:
-        if start > v:
-            pygame.draw.line(surface, COLOR_BOUNDARY, mm_to_px(fc.FIELD_CENTER, v), mm_to_px(fc.FIELD_CENTER, start), 3)
-        v = max(v, end)
+def _draw_walls(surface):
+    """柵(field_geometry.WALL_SEGMENTS)。途切れている所がロボットの通れる開口。"""
+    for kind, p0, p1 in fg.WALL_SEGMENTS:
+        color, width = _WALL_STYLE[kind]
+        pygame.draw.line(surface, color, mm_to_px(*p0), mm_to_px(*p1), width)
 
 
 def draw_static_field(surface, font):
@@ -193,7 +188,6 @@ def draw_static_field(surface, font):
     draw_rect_mm(surface, COLOR_L1[fc.TeamColor.RED], fc.L1_ORIGIN, (l1_red_width, fc.L1_SIZE))
     draw_rect_mm(surface, COLOR_L1[fc.TeamColor.BLUE], (half, fc.L1_ORIGIN[1]),
                  (fc.L1_SIZE - l1_red_width, fc.L1_SIZE))
-    draw_rect_mm(surface, COLOR_L1_BARRIER, fc.L1_ORIGIN, (fc.L1_SIZE, fc.L1_SIZE), width=4)
     for origin in fc.L1_SHARED_AREA_ORIGINS:
         draw_rect_mm(surface, COLOR_SHARED, origin, fc.L1_SHARED_AREA_SIZE)
     for team, origin in _both_sides(fc.L1_RETRY_ZONE_ORIGIN, fc.L1_RETRY_ZONE_SIZE):
@@ -211,7 +205,6 @@ def draw_static_field(surface, font):
 
     # L2とL1->L2の階段
     draw_rect_mm(surface, COLOR_L2, fc.L2_ORIGIN, (fc.L2_SIZE, fc.L2_SIZE))
-    draw_rect_mm(surface, COLOR_L2_EDGE, fc.L2_ORIGIN, (fc.L2_SIZE, fc.L2_SIZE), width=2)
     for team, origin in _both_sides(fc.L2_STAIRS_ORIGIN, fc.L2_STAIRS_SIZE):
         _draw_stairs(surface, COLOR_STAIRS[team], origin, fc.L2_STAIRS_SIZE, 1, along_u=True)
 
@@ -223,8 +216,7 @@ def draw_static_field(surface, font):
     draw_circle_mm(surface, COLOR_PILLAR, (fc.FIELD_CENTER, fc.FIELD_CENTER), fc.CENTRAL_PILLAR_DIAMETER)
     draw_circle_mm(surface, COLOR_PILLAR, fc.MUSTIKA_PILLAR_ORIGIN, fc.MUSTIKA_PILLAR_DIAMETER)
 
-    _draw_center_divider(surface)
-    draw_rect_mm(surface, COLOR_BOUNDARY, (0, 0), (fc.GAME_FIELD_SIZE, fc.GAME_FIELD_SIZE), width=4)
+    _draw_walls(surface)
 
 
 def draw_field_labels(surface, font):

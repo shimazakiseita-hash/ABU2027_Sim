@@ -47,10 +47,16 @@ from .decision_common import (
     point_in_rect,
     transfer_area_rect,
 )
+from .navigation import GridMap, Navigator
+from .robot_spec import declare_robot_specs
 
 CONTROL_HZ = 10.0
-GRASP_TIMEOUT_TICKS = int(CONTROL_HZ * 5)
-BUILD_SETTLE_TICKS = int(CONTROL_HZ * 0.5)
+# 機構の動作時間(機体仕様)にこれだけ足した時間で、つかめない/置けない場合はやり直す
+MECHANISM_TIMEOUT_MARGIN_S = 4.0
+# 受渡しエリアに物が現れてから取りに行くまでの待ち(置いたTRが離れるのを待つ)
+HANDOFF_SETTLE_TICKS = int(CONTROL_HZ * 1.5)
+# 物をつかみに寄るとき、把持レンジ(機体仕様)よりこれだけ手前で止まる
+GRASP_APPROACH_SLACK_MM = 50.0
 
 # 順番に完成塔を作る建築スポット。L2はルールブック上「全体が共用エリア」
 # (Building Spot: located on L1 (exclusive and shared) and L2 (all shared))
@@ -102,6 +108,12 @@ class BrDecisionBrNode(Node):
         self._tower_index = 0
         self._layer_index = 0
 
+        self._spec = declare_robot_specs(self)['br']
+        self._nav = Navigator(GridMap('br', self._spec), self._spec)
+        self._wait_point = br_transfer_wait_point(self._spec)
+        self._grasp_timeout_ticks = int(CONTROL_HZ * (self._spec.grasp_time_s + MECHANISM_TIMEOUT_MARGIN_S))
+        self._build_timeout_ticks = int(CONTROL_HZ * (self._spec.place_time_s + MECHANISM_TIMEOUT_MARGIN_S))
+
         self.pub_cmd_vel = self.create_publisher(Twist, '/br_cmd_vel', 10)
         self.pub_gripper = self.create_publisher(GripperCmd, '/br_gripper_cmd', 10)
         self.pub_build_action = self.create_publisher(BuildAction, '/br_build_action', 10)
@@ -147,6 +159,31 @@ class BrDecisionBrNode(Node):
                 return b
         return None
 
+    def _holding_block(self) -> bool:
+        return any(b.held_by == 'br' for b in self._blocks.blocks)
+
+    def _holding_mustika(self) -> bool:
+        return self._mustika is not None and self._mustika.held_by == 'br'
+
+    def _mustika_waiting_in_transfer(self) -> bool:
+        origin, size = transfer_area_rect()
+        return (self._mustika is not None and self._mustika.held_by == 'none'
+                and point_in_rect(self._mustika.position.x, self._mustika.position.y, origin, size))
+
+    def _grip(self, open_: bool, target_id: str = '') -> None:
+        self.pub_gripper.publish(GripperCmd(open=open_, target_force=0.0 if open_ else 1.0,
+                                            target_block_id='' if open_ else target_id))
+
+    def _stop(self) -> None:
+        self.pub_cmd_vel.publish(Twist())
+
+    def _approach(self, target_uv, block_type: str) -> None:
+        """つかむ対象のすぐ近くまで寄る(受渡しエリア内の短い距離なので直進)。"""
+        twist, _arrived = drive_toward(
+            self._current_uv(), target_uv, self._spec,
+            arrival_threshold_mm=self._spec.grasp_range_mm(block_type) - GRASP_APPROACH_SLACK_MM)
+        self.pub_cmd_vel.publish(twist)
+
     def _tick(self) -> None:
         if self._pose is None:
             return
@@ -156,20 +193,21 @@ class BrDecisionBrNode(Node):
             return
 
         if self._state == BrState.APPROACH_TRANSFER_AREA:
-            self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
-            twist, arrived = drive_toward(
-                self._current_uv(), br_transfer_wait_point(),
-                arrival_threshold_mm=TRANSFER_POINT_ARRIVAL_THRESHOLD_MM,
-            )
+            self._grip(True)
+            twist, arrived = self._nav.drive(
+                self._current_uv(), self._wait_point, TRANSFER_POINT_ARRIVAL_THRESHOLD_MM)
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = BrState.WAIT_FOR_BLOCK
+                self._timeout_counter = 0
 
         elif self._state == BrState.WAIT_FOR_BLOCK:
-            self.pub_cmd_vel.publish(Twist())
-            self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
+            self._stop()
+            self._grip(True)
             target = self._find_waiting_block()
-            if target is not None:
+            # 現れてすぐ取りに行くと、置いたばかりでまだエリアにいるTRとぶつかる
+            self._timeout_counter = self._timeout_counter + 1 if target is not None else 0
+            if target is not None and self._timeout_counter >= HANDOFF_SETTLE_TICKS:
                 self._target_block_id = target.id
                 self._state = BrState.GRASP_FROM_TRANSFER
                 self._timeout_counter = 0
@@ -177,105 +215,109 @@ class BrDecisionBrNode(Node):
         elif self._state == BrState.GRASP_FROM_TRANSFER:
             target = self._find_block(self._target_block_id)
             self._timeout_counter += 1
+            self._grip(False, self._target_block_id or '')
             if target is None:
                 # TR自身との接触等で一時的に検知が途切れることがあるため、
                 # 一度見失っただけでは諦めず、その場で待って様子を見る
-                # (タイムアウトまで見つからなければ待機に戻る)
-                self.pub_cmd_vel.publish(Twist())
-                self.pub_gripper.publish(GripperCmd(
-                    open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
-                if self._timeout_counter > GRASP_TIMEOUT_TICKS:
-                    self._target_block_id = None
-                    self._state = BrState.WAIT_FOR_BLOCK
-                return
-            twist, _arrived = drive_toward(self._current_uv(), (target.position.x, target.position.y))
-            self.pub_cmd_vel.publish(twist)
-            self.pub_gripper.publish(GripperCmd(
-                open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
-            if target.held_by == 'br':
+                self._stop()
+            else:
+                self._approach((target.position.x, target.position.y), target.block_type)
+            if target is not None and target.held_by == 'br':
                 self._state = BrState.APPROACH_BUILD_SPOT
-            elif self._timeout_counter > GRASP_TIMEOUT_TICKS:
+            elif self._timeout_counter > self._grasp_timeout_ticks:
                 self._target_block_id = None
-                self._state = BrState.WAIT_FOR_BLOCK
+                self._state = BrState.APPROACH_TRANSFER_AREA
 
         elif self._state == BrState.APPROACH_BUILD_SPOT:
-            self.pub_gripper.publish(GripperCmd(
-                open=False, target_force=1.0, target_block_id=self._target_block_id or ''))
-            twist, arrived = drive_toward(self._current_uv(), _build_spot_center(self._current_build_spot_id()))
+            self._grip(False, self._target_block_id or '')
+            twist, arrived = self._nav.drive(
+                self._current_uv(), _build_spot_center(self._current_build_spot_id()), 150.0)
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = BrState.RELEASE_AND_BUILD
                 self._timeout_counter = 0
 
         elif self._state == BrState.RELEASE_AND_BUILD:
-            self.pub_cmd_vel.publish(Twist())
+            # 置く動作(機体仕様のplace_time_s)が終わるまで、建築指令を送り続け
+            # グリッパーは閉じたままにする。手を離れた(=設置された)のを観測してから開く
+            self._stop()
             _expected_type, action_type = BUILD_SEQUENCE[self._layer_index]
             self.pub_build_action.publish(
                 BuildAction(action_type=action_type, target_build_spot_id=self._current_build_spot_id()))
-            self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
             self._timeout_counter += 1
-            if self._timeout_counter > BUILD_SETTLE_TICKS:
+            if not self._holding_block():
+                self._grip(True)
                 self._target_block_id = None
-                self._layer_index += 1
-                if self._layer_index >= len(BUILD_SEQUENCE):
-                    self._layer_index = 0
-                    self._tower_index += 1
-                    if self._tower_index >= len(BUILD_SPOT_PLAN):
-                        self._state = BrState.WAIT_FOR_MUSTIKA
-                    else:
-                        self._state = BrState.APPROACH_TRANSFER_AREA
-                else:
-                    self._state = BrState.APPROACH_TRANSFER_AREA
+                self._advance_layer()
+            else:
+                self._grip(False, self._target_block_id or '')
+                if self._timeout_counter > self._build_timeout_ticks:
+                    self._state = BrState.APPROACH_BUILD_SPOT  # 置けなかったので寄り直す
 
         elif self._state == BrState.WAIT_FOR_MUSTIKA:
             # BUILD_SPOT_PLAN全ての塔の設置が完了した。秘蹟の要件(Sanctuary
-            # Mandate)の判定自体はTR側の責務なので、BR側はただ受渡しエリアに
+            # Mandate)の判定自体はTR側の責務なので、BR側は受渡しエリア脇に戻って
             # ムスティカが現れるのを待つだけでよい(WAIT_FOR_BLOCKと同じ考え方)。
-            self.pub_cmd_vel.publish(Twist())
-            self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
-            origin, size = transfer_area_rect()
-            if (self._mustika is not None and self._mustika.held_by == 'none'
-                    and point_in_rect(self._mustika.position.x, self._mustika.position.y, origin, size)):
+            self._grip(True)
+            twist, _arrived = self._nav.drive(
+                self._current_uv(), self._wait_point, TRANSFER_POINT_ARRIVAL_THRESHOLD_MM)
+            self.pub_cmd_vel.publish(twist)
+            waiting = self._mustika_waiting_in_transfer()
+            self._timeout_counter = self._timeout_counter + 1 if waiting else 0
+            if waiting and self._timeout_counter >= HANDOFF_SETTLE_TICKS:
                 self._target_block_id = 'mustika'
                 self._state = BrState.GRASP_MUSTIKA_FROM_TRANSFER
                 self._timeout_counter = 0
 
         elif self._state == BrState.GRASP_MUSTIKA_FROM_TRANSFER:
             self._timeout_counter += 1
+            self._grip(False, 'mustika')
             if self._mustika is not None:
-                twist, _arrived = drive_toward(
-                    self._current_uv(), (self._mustika.position.x, self._mustika.position.y))
-                self.pub_cmd_vel.publish(twist)
+                self._approach((self._mustika.position.x, self._mustika.position.y), 'mustika')
             else:
-                self.pub_cmd_vel.publish(Twist())
-            self.pub_gripper.publish(GripperCmd(open=False, target_force=1.0, target_block_id='mustika'))
-            if self._mustika is not None and self._mustika.held_by == 'br':
+                self._stop()
+            if self._holding_mustika():
                 self._state = BrState.APPROACH_CENTRAL_PILLAR
-            elif self._timeout_counter > GRASP_TIMEOUT_TICKS:
+            elif self._timeout_counter > self._grasp_timeout_ticks:
                 self._target_block_id = None
                 self._state = BrState.WAIT_FOR_MUSTIKA
 
         elif self._state == BrState.APPROACH_CENTRAL_PILLAR:
-            self.pub_gripper.publish(GripperCmd(open=False, target_force=1.0, target_block_id='mustika'))
-            twist, arrived = drive_toward(self._current_uv(), (fc.FIELD_CENTER, fc.FIELD_CENTER))
+            self._grip(False, 'mustika')
+            twist, arrived = self._nav.drive(self._current_uv(), (fc.FIELD_CENTER, fc.FIELD_CENTER), 150.0)
             self.pub_cmd_vel.publish(twist)
             if arrived:
                 self._state = BrState.RELEASE_MUSTIKA
                 self._timeout_counter = 0
 
         elif self._state == BrState.RELEASE_MUSTIKA:
-            self.pub_cmd_vel.publish(Twist())
+            self._stop()
             self.pub_build_action.publish(BuildAction(action_type='PLACE_MUSTIKA', target_build_spot_id=''))
-            self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
             self._timeout_counter += 1
-            if self._timeout_counter > BUILD_SETTLE_TICKS:
+            if not self._holding_mustika():
+                self._grip(True)
                 self._target_block_id = None
                 self._state = BrState.PLAN_COMPLETE
+            else:
+                self._grip(False, 'mustika')
+                if self._timeout_counter > self._build_timeout_ticks:
+                    self._state = BrState.APPROACH_CENTRAL_PILLAR
 
         elif self._state == BrState.PLAN_COMPLETE:
             # 全ての塔の設置+ムスティカの奉納(8.5)が完了した。以降は何もせず停止する。
-            self.pub_cmd_vel.publish(Twist())
-            self.pub_gripper.publish(GripperCmd(open=True, target_force=0.0))
+            self._stop()
+            self._grip(True)
+
+    def _advance_layer(self) -> None:
+        self._layer_index += 1
+        if self._layer_index >= len(BUILD_SEQUENCE):
+            self._layer_index = 0
+            self._tower_index += 1
+            if self._tower_index >= len(BUILD_SPOT_PLAN):
+                self._state = BrState.WAIT_FOR_MUSTIKA
+                self._timeout_counter = 0
+                return
+        self._state = BrState.APPROACH_TRANSFER_AREA
 
 
 def main(args=None):

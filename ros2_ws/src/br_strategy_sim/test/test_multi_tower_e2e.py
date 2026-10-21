@@ -4,22 +4,13 @@
 TRがストレージのアース2個・共用エリアのスカイ1個を受渡しエリア経由でBRに
 届け、BRがBUILD_SPOT_PLAN(現状L1・L2に1本ずつ)に完成塔を組む一連の流れを、
 秘蹟の要件(Sanctuary Mandate)を満たしたムスティカの回収・中央支柱への設置
-まで含めて確認する。実時間で5分前後かかる(意思決定ロジックが実際に
-ロボットを動かして最後まで通す想定のため、早送りはしない)。
+まで含めて確認する。既定の機体仕様(config/robot_spec.yamlの仮値、最高速度0.3m/s)
+では実時間で11分前後かかる(意思決定ロジックが実際にロボットを動かして最後まで
+通す想定のため、早送りはしない)。
 
-フィールドを公式図の配置(ストレージがスタートゾーンと反対側の辺、受渡しエリアが
-L1の外側)にしてからは移動距離が延び、現在の巡航速度(decision_common.
-CRUISE_SPEED_M_S)では試合時間3分に収まらない。このテストは意思決定ロジックが
-最後まで通ることの確認が目的なので、試合時間を延ばして実行する。
-
-既知の不具合(要調整、CLAUDE.md「既知の残課題」参照): 受渡しエリア内で
-BRに回収されず待機しているブロックが、TR/BRの物理的な出入りでエリア境界の
-すぐ外へ押し出されると、point_in_rectの厳密な内外判定により以後
-「受渡し待ち」として検知されなくなり、BRが該当レイヤーを永久に待ち続ける
-ことがある。統合テストでは概ね5回に3回程度の頻度で発生し、その場合この
-テストはreached_endのアサーションでタイムアウト失敗する(意思決定ロジック
-自体は正常だが、現在のシムの物理挙動に起因する既知のflakinessであり、
-このテストが偶発的に失敗すること自体が不具合の記録になっている)。
+既定の仮値では試合時間3分に収まらない(CLAUDE.md「既知の残課題」参照)。この
+テストは意思決定ロジックが最後まで通ることの確認が目的なので、試合時間を延ばして
+実行する。
 """
 
 from __future__ import annotations
@@ -33,8 +24,8 @@ from br_strategy_sim.br_decision_tr_node import TrState
 
 from ._sim_harness import sim_harness
 
-TIMEOUT_S = 700.0
-MATCH_DURATION_SEC = 1000.0
+TIMEOUT_S = 1100.0
+MATCH_DURATION_SEC = 2000.0
 # 塔2本(210点) + 受渡し点6個x5点(30点) + ムスティカ奉納(250点) = 490点
 EXPECTED_FINAL_SCORE = 490
 
@@ -61,6 +52,8 @@ def test_multi_tower_and_mustika_reach_expected_score(monkeypatch):
             f'TR/BRが時間内に完了状態へ到達しなかった '
             f'(tr_state={tr._state}, br_state={br._state}, score={scores["red"]})'
         )
+        # 完了状態はBRが設置完了を観測した時点なので、審判の得点更新が届くまで少し待つ
+        harness.spin_until(lambda: scores['red'] == EXPECTED_FINAL_SCORE, timeout_s=5.0)
         assert scores['red'] == EXPECTED_FINAL_SCORE, (
             f'最終スコアが期待値と異なる: {scores["red"]} != {EXPECTED_FINAL_SCORE}'
         )

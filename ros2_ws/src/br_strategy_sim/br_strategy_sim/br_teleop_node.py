@@ -47,7 +47,7 @@ from br_msgs.msg import BuildAction, DetectedBlockArray, DetectedMustika, Grippe
 
 from . import field_constants as fc
 from . import field_drawing as fd
-from .decision_common import CRUISE_SPEED_M_S, block_arrival_threshold_mm
+from .robot_spec import declare_robot_specs
 
 CONTROL_HZ = 20.0
 WINDOW_WIDTH = 680
@@ -59,20 +59,11 @@ PRECISION_SPEED_SCALE = 0.4
 FLASH_SEC = 0.15
 # 操作結果の通知を表示しておく時間
 MESSAGE_SEC = 3.0
-# 「つかむ」を押してから、実際につかめたかを判定するまでの猶予
-GRIP_CONFIRM_SEC = 1.0
+# つかむ/はなす/置くを押してから、機構の動作時間(機体仕様)に加えて結果を待つ猶予
+ACTION_CONFIRM_MARGIN_SEC = 1.5
 
 _ROBOT_IDS = ('tr', 'br')
 _ROBOT_NAMES = {'tr': '運搬ロボ TR', 'br': '建築ロボ BR'}
-
-# 距離->把持レンジ判定に使うブロック半径(decision_common.block_arrival_threshold_mmと
-# 同じ考え方。'mustika'はDetectedBlockArrayには含まれない別トピックのため
-# ここで個別に半径を持たせて候補リストへ合流させる)
-_BLOCK_HALF_SIZE_MM = {
-    'earth': fc.EARTH_BLOCK_SIZE / 2,
-    'sky': fc.SKY_BLOCK_SIZE / 2,
-    'mustika': fc.MUSTIKA_DIAMETER / 2,
-}
 
 _COLOR_NAMES = {fc.TeamColor.RED: '赤', fc.TeamColor.BLUE: '青'}
 _SPOT_TEAM_NAMES = {**_COLOR_NAMES, '': '共用'}
@@ -210,7 +201,9 @@ class BrTeleopNode(Node):
         # 操作結果の通知(文言, 背景色, 表示終了時刻)
         self._message: tuple[str, tuple[int, int, int], float] | None = None
         # 「つかむ」の結果待ち(ロボット, 対象id, 表示名, 判定期限)
-        self._grip_pending: tuple[str, str, str, float] | None = None
+        # 機構の動作の結果待ち(完了判定, 完了時の処理, 成功時の文言, 失敗時の文言, 期限, 失敗時の処理)
+        self._pending: tuple | None = None
+        self._specs = declare_robot_specs(self)
 
         self._buttons = self._create_buttons()
         # 候補チップは候補数に応じて毎回描き直すため、最後に描いた位置を覚えておく
@@ -320,12 +313,12 @@ class BrTeleopNode(Node):
                 if block.held_by != 'none' or block.level != 0:
                     continue
                 dist = math.hypot(block.position.x - cur[0], block.position.y - cur[1])
-                reach = block_arrival_threshold_mm(_BLOCK_HALF_SIZE_MM.get(block.block_type, 0.0))
+                reach = self._specs[self._active_robot].grasp_range_mm(block.block_type)
                 candidates.append(_Candidate(block.id, block.block_type, block.top_color, dist, reach))
             mustika = self._detected_mustika
             if mustika is not None and mustika.held_by == 'none':
                 dist = math.hypot(mustika.position.x - cur[0], mustika.position.y - cur[1])
-                reach = block_arrival_threshold_mm(_BLOCK_HALF_SIZE_MM['mustika'])
+                reach = self._specs[self._active_robot].grasp_range_mm('mustika')
                 candidates.append(_Candidate('mustika', 'mustika', '', dist, reach))
         candidates.sort(key=lambda c: c.dist)
         self._grasp_candidates = candidates
@@ -356,12 +349,29 @@ class BrTeleopNode(Node):
             return 'つかむ', name, True
         return 'つかむ', f'遠すぎます（あと約{(target.dist - target.reach) / 10:.0f}cm）', False
 
+    def _br_too_far(self, point) -> str | None:
+        """BRが置く/裏返すには遠すぎるなら理由の文言(シムの受付条件と同じ距離)。"""
+        cur = self._current_uv('br')
+        spec = self._specs['br']
+        near_mm = spec.half_width_mm + spec.grasp_reach_mm + fc.BUILD_SPOT_SIZE[0] / 2
+        if cur is None:
+            return 'BRの位置が分かりません'
+        dist = math.dist(cur, point)
+        return f'BRが遠すぎます（あと約{(dist - near_mm) / 10:.0f}cm）' if dist > near_mm else None
+
+    def _selected_spot_center(self) -> tuple[float, float]:
+        origin = fc.BUILD_SPOTS[self._build_spot_index][3]
+        return (origin[0] + fc.BUILD_SPOT_SIZE[0] / 2, origin[1] + fc.BUILD_SPOT_SIZE[1] / 2)
+
     def _place_view(self) -> tuple[str, bool]:
         held = self._held('br')
         if held is None:
             return 'BRが何も持っていません', False
         if held[1] == 'mustika':
             return 'ムスティカは右のボタンで', False
+        too_far = self._br_too_far(self._selected_spot_center())
+        if too_far:
+            return too_far, False
         return f'{_block_name(*held, short=True)}を置く', True
 
     def _flip_view(self) -> tuple[str, bool]:
@@ -370,16 +380,24 @@ class BrTeleopNode(Node):
             return 'まだ何も置かれていません', False
         if tower.block_types[-1] != 'sky':
             return '一番上がスカイではありません', False
+        too_far = self._br_too_far(self._selected_spot_center())
+        if too_far:
+            return too_far, False
         return f'上面 {_COLOR_NAMES.get(tower.top_colors[-1], "")} → 反対の色へ', True
 
     def _mustika_view(self) -> tuple[str, bool]:
         held = self._held('br')
         if held is None or held[1] != 'mustika':
             return 'BRがムスティカを持っていません', False
+        too_far = self._br_too_far((fc.FIELD_CENTER, fc.FIELD_CENTER))
+        if too_far:
+            return too_far, False
         return '中央の柱に置く', True
 
     def _button_view(self, name: str) -> tuple[str, bool]:
         """ボタンの(補足/無効理由, 押せるか)。"""
+        if self._pending is not None and name in ('grip', 'place', 'flip', 'mustika'):
+            return '動作中です', False
         if name == 'grip':
             _, sub, enabled = self._grip_view()
             return sub, enabled
@@ -427,7 +445,7 @@ class BrTeleopNode(Node):
             return
 
         self._update_grasp_candidates()
-        self._check_grip_result()
+        self._check_pending()
         self._publish_cmd_vel()
         self._render()
 
@@ -486,33 +504,48 @@ class BrTeleopNode(Node):
         self.pub_gripper_cmd[robot].publish(GripperCmd(
             open=open_, target_force=0.0 if open_ else 1.0, target_block_id=target_id))
 
+    def _start_pending(self, done, on_done, ok_msg: str, fail_msg: str, wait_s: float, on_fail=None) -> None:
+        self._pending = (done, on_done, ok_msg, fail_msg, time.monotonic() + wait_s + ACTION_CONFIRM_MARGIN_SEC, on_fail)
+
+    def _check_pending(self) -> None:
+        if self._pending is None:
+            return
+        done, on_done, ok_msg, fail_msg, deadline, on_fail = self._pending
+        if done():
+            self._pending = None
+            if on_done:
+                on_done()
+            self._notify(ok_msg, _MSG_OK)
+        elif time.monotonic() > deadline:
+            self._pending = None
+            if on_fail:
+                on_fail()
+            self._notify(fail_msg, _MSG_WARN)
+
     def _toggle_gripper(self) -> None:
         robot = self._active_robot
+        spec = self._specs[robot]
         held = self._held(robot)
         if held is not None:
+            name = _block_name(*held)
             self._send_gripper(robot, True)
-            self._grip_pending = None
-            self._notify(f'{_block_name(*held)}をはなしました', _MSG_OK)
+            self._notify(f'{name}をはなしています…', _MSG_INFO)
+            self._start_pending(lambda: self._held(robot) is None, None, f'{name}をはなしました',
+                                f'{name}をはなせませんでした', spec.release_time_s)
             return
         target = self._selected_candidate()
         name = _block_name(target.id, target.block_type, target.top_color)
         self._send_gripper(robot, False, target.id)
-        self._grip_pending = (robot, target.id, name, time.monotonic() + GRIP_CONFIRM_SEC)
         self._notify(f'{name}をつかんでいます…', _MSG_INFO)
 
-    def _check_grip_result(self) -> None:
-        if self._grip_pending is None:
-            return
-        robot, target_id, name, deadline = self._grip_pending
-        held = self._held(robot)
-        if held is not None and held[0] == target_id:
-            self._grip_pending = None
-            self._notify(f'{name}をつかみました', _MSG_OK)
-        elif time.monotonic() > deadline:
-            # 閉じたままだと後でレンジに入った瞬間に勝手につかむため、開き直しておく
-            self._grip_pending = None
-            self._send_gripper(robot, True)
-            self._notify(f'{name}をつかめませんでした。もう少し近づいてから押してください', _MSG_WARN)
+        def grasped() -> bool:
+            held_now = self._held(robot)
+            return held_now is not None and held_now[0] == target.id
+
+        # 失敗時は開き直す(閉じたままだと後でレンジに入った瞬間に勝手につかむため)
+        self._start_pending(grasped, None, f'{name}をつかみました',
+                            f'{name}をつかめませんでした。もう少し近づいてから押してください',
+                            spec.grasp_time_s, on_fail=lambda: self._send_gripper(robot, True))
 
     def _send_build(self, action_type: str) -> None:
         self.pub_build_action.publish(
@@ -520,19 +553,32 @@ class BrTeleopNode(Node):
 
     def _place_block(self) -> None:
         _, block_type, _ = held = self._held('br')
+        name = _block_name(*held)
+        spot = _spot_name(*self._selected_spot())
+        # 置く動作が終わるまでグリッパーは閉じたまま(シム側も設置中の開指令は無視する)。
+        # 置けたら開く(設置済みの物は再びつかまない)
         self._send_build('PLACE_SKY_BLOCK' if block_type == 'sky' else 'PLACE_EARTH_BLOCK')
-        # 閉じたままだと置いた直後のブロックを再びつかむため、意思決定ノードと同様に開く
-        self._send_gripper('br', True)
-        self._notify(f'{_block_name(*held)}を {_spot_name(*self._selected_spot())} に置きました', _MSG_OK)
+        self._notify(f'{name}を {spot} に置いています…', _MSG_INFO)
+        self._start_pending(lambda: self._held('br') is None, lambda: self._send_gripper('br', True),
+                            f'{name}を {spot} に置きました', f'{name}を置けませんでした',
+                            self._specs['br'].place_time_s)
 
     def _flip_sky(self) -> None:
+        spot_id = self._selected_spot()[0]
+        spot = _spot_name(*self._selected_spot())
+        before = self._towers[spot_id].top_colors[-1]
         self._send_build('FLIP_SKY_BLOCK')
-        self._notify(f'{_spot_name(*self._selected_spot())} のスカイを裏返しました', _MSG_OK)
+        self._notify(f'{spot} のスカイを裏返しています…', _MSG_INFO)
+        self._start_pending(lambda: self._towers[spot_id].top_colors[-1] != before, None,
+                            f'{spot} のスカイを裏返しました', 'スカイを裏返せませんでした',
+                            self._specs['br'].flip_time_s)
 
     def _place_mustika(self) -> None:
         self._send_build('PLACE_MUSTIKA')
-        self._send_gripper('br', True)
-        self._notify('ムスティカを中央の柱に置きました', _MSG_OK)
+        self._notify('ムスティカを中央の柱に置いています…', _MSG_INFO)
+        self._start_pending(lambda: self._held('br') is None, lambda: self._send_gripper('br', True),
+                            'ムスティカを中央の柱に置きました', 'ムスティカを置けませんでした',
+                            self._specs['br'].place_time_s)
 
     def _publish_cmd_vel(self) -> None:
         keys = pygame.key.get_pressed()
@@ -549,7 +595,8 @@ class BrTeleopNode(Node):
                 dir_x += du
                 dir_y += dv
         self._precise_active = self._precise_lock or keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
-        speed = CRUISE_SPEED_M_S * (PRECISION_SPEED_SCALE if self._precise_active else 1.0)
+        speed = self._specs[self._active_robot].max_speed_m_s * (
+            PRECISION_SPEED_SCALE if self._precise_active else 1.0)
 
         norm = math.hypot(dir_x, dir_y)
         vx = dir_x / norm * speed if norm > 0.0 else 0.0
