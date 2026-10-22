@@ -48,6 +48,7 @@ from br_msgs.msg import BuildAction, DetectedBlockArray, DetectedMustika, Grippe
 from . import field_constants as fc
 from . import field_drawing as fd
 from .robot_spec import declare_robot_specs
+from .steady_clock import steady_clock
 
 CONTROL_HZ = 20.0
 WINDOW_WIDTH = 680
@@ -228,7 +229,7 @@ class BrTeleopNode(Node):
         self.create_subscription(Int32, '/score/blue', self._on_score_blue, 10)
         self.create_subscription(Bool, '/match_ended', self._on_match_ended, 10)
 
-        self.create_timer(1.0 / CONTROL_HZ, self._tick)
+        self.create_timer(1.0 / CONTROL_HZ, self._tick, clock=steady_clock())
 
     def _create_buttons(self) -> dict[str, _Button]:
         buttons = {

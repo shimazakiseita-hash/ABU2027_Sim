@@ -44,6 +44,7 @@ import math
 
 import rclpy
 from geometry_msgs.msg import Point
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int32
 
@@ -53,6 +54,7 @@ from . import field_constants as fc
 from . import field_geometry as fg
 from .physics_blocks import LEVEL_GROUND, LEVEL_L1, LEVEL_L2
 from .robot_spec import declare_robot_specs
+from .steady_clock import steady_clock
 
 # 6.1押出し・7.2設置済み移動の判定: /true_state/blocks受信間隔での位置変化(mm)の閾値。
 # 発行周期が固定でない前提のため「速度」ではなく「1メッセージあたりの変位」として扱う(要調整)。
@@ -101,9 +103,12 @@ class BrRefereeNode(Node):
         # br_teleop_nodeでの長時間の手動テスト時にcmd_vel等が無視される
         # ようになるのを避けたい場合のため、パラメータで上書きできるように
         # しておく(例: match_duration_sec:=999999)。
-        self.declare_parameter('match_duration_sec', float(fc.MATCH_DURATION_SEC))
-        self._match_duration_sec = self.get_parameter('match_duration_sec').value
-        self._match_start_time = self.get_clock().now()
+        # 起動引数で整数(例: 999999)を渡されても落ちないよう、型を固定しない
+        self.declare_parameter('match_duration_sec', float(fc.MATCH_DURATION_SEC),
+                               ParameterDescriptor(dynamic_typing=True))
+        self._match_duration_sec = float(self.get_parameter('match_duration_sec').value)
+        self._steady = steady_clock()
+        self._match_start_time = self._steady.now()
         self._match_ended = False
 
         self.pub_score_red = self.create_publisher(Int32, '/score/red', 10)
@@ -118,14 +123,14 @@ class BrRefereeNode(Node):
         self.create_subscription(TowerArray, '/true_state/tower_state', self._on_tower_state, 10)
         self.create_subscription(BuildAction, '/br_build_action', self._on_build_action, 10)
 
-        self.create_timer(0.1, self._check_match_timer)
+        self.create_timer(0.1, self._check_match_timer, clock=steady_clock())
 
     # --- 試合時間 (9.1) ---
 
     def _check_match_timer(self) -> None:
         if self._match_ended:
             return
-        elapsed_sec = (self.get_clock().now() - self._match_start_time).nanoseconds / 1e9
+        elapsed_sec = (self._steady.now() - self._match_start_time).nanoseconds / 1e9
         if elapsed_sec < self._match_duration_sec:
             return
         # 9.1.3: ブザーが鳴った瞬間の状態で最終得点を確定する。以後は

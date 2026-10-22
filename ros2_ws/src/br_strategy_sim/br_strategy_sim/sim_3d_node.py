@@ -4,7 +4,7 @@ ABU Robocon 2027 3Dシム(MuJoCo): 実機のcan_node+STM32+センサーの代わ
 ハードウェア境界(docs/topic_contract.md「ハードウェア境界」)のトピックだけを話す:
 - 受ける: /<r>/base_cmd(機体座標の速度), /<r>/mechanism_cmd(機構の指令)
 - 返す: /<r>/wheel_deltas(4輪のエンコーダ差分), /<r>/imu, /<r>/scan(LiDAR), /<r>/mechanism_state
-(<r>はtr/br)。その上の足回り制御・推測航法・機構制御は本番と同じノード(br_robotパッケージ)が
+(<r>はtr/br)。3D表示は別ノード(sim_3d_viewer_node)が/sim3d/posesを受けて描く。その上の足回り制御・推測航法・機構制御は本番と同じノード(br_robotパッケージ)が
 動く。審判・2D可視化・認識の代行用に、シムだけが知る正解値/true_state/*も今まで通り出す。
 
 箱型ロボットの簡略化(機体設計が決まったら車輪・アームのモデルに差し替える):
@@ -21,14 +21,13 @@ ABU Robocon 2027 3Dシム(MuJoCo): 実機のcan_node+STM32+センサーの代わ
 from __future__ import annotations
 
 import math
-import os
 import random
 
 import mujoco
 import numpy as np
 import pymunk
 import rclpy
-from geometry_msgs.msg import Point, Pose2D, Quaternion, Twist
+from geometry_msgs.msg import Point, Pose, Pose2D, PoseArray, Quaternion, Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import Bool, Int16MultiArray
@@ -42,6 +41,7 @@ from . import scene_3d
 from .physics_blocks import LEVEL_GROUND, LEVEL_L1, LEVEL_L2
 from .robot_body import M_TO_MM, RobotBody, add_static_field, make_robot_body
 from .robot_spec import body_axes, declare_robot_specs, mecanum_wheel_speeds
+from .steady_clock import steady_clock
 
 PHYSICS_HZ = 60.0
 SUBSTEPS = 8  # MuJoCoの1ステップ = 1/(60*8)秒
@@ -97,11 +97,6 @@ class Sim3DNode(Node):
     def __init__(self):
         super().__init__('br_sim_3d_node')
         self._specs = declare_robot_specs(self)
-        self.declare_parameter('show_viewer', True)
-        self.declare_parameter('screenshot_path', '')
-        self.declare_parameter('screenshot_interval_s', 2.0)
-        self._screenshot_path = self.get_parameter('screenshot_path').value
-        self._screenshot_interval = self.get_parameter('screenshot_interval_s').value
 
         dt = 1.0 / PHYSICS_HZ
         self.model = mujoco.MjModel.from_xml_string(scene_3d.build_scene_xml(self._specs, dt / SUBSTEPS))
@@ -130,9 +125,6 @@ class Sim3DNode(Node):
         self._mech = {r: _Mechanism() for r in ROBOT_IDS}
         self._lidar_elapsed = {r: 0.0 for r in ROBOT_IDS}
         self._match_ended = False
-        self._screenshot_elapsed = 0.0
-        self._renderer = None
-        self._viewer = None
         self._update_robot_mocap()
 
         self.pub = {}
@@ -150,10 +142,9 @@ class Sim3DNode(Node):
         self.pub_blocks = self.create_publisher(BlockArray, '/true_state/blocks', 10)
         self.pub_mustika = self.create_publisher(MustikaPose, '/true_state/mustika_pose', 10)
         self.pub_towers = self.create_publisher(TowerArray, '/true_state/tower_state', 10)
-
-        if self.get_parameter('show_viewer').value:
-            self._open_viewer()
-        self.create_timer(dt, self._step)
+        # 3D表示用(sim_3d_viewer_node): ロボットTR, BR、続いてscene_3d.object_specs()の順の位置姿勢(m)
+        self.pub_scene_poses = self.create_publisher(PoseArray, '/sim3d/poses', 10)
+        self.create_timer(dt, self._step, clock=steady_clock())
 
     # --- 受信 ---
 
@@ -188,10 +179,8 @@ class Sim3DNode(Node):
         if not self._match_ended:
             for r in ROBOT_IDS:
                 self._update_mechanism(r, dt)
-        lock = self._viewer.lock() if self._viewer is not None else _NullLock()
-        with lock:
-            for _ in range(SUBSTEPS):
-                mujoco.mj_step(self.model, self.data)
+        for _ in range(SUBSTEPS):
+            mujoco.mj_step(self.model, self.data)
         self._enforce_out_of_field()
         for r in ROBOT_IDS:
             self._publish_wheels_and_imu(r, dt)
@@ -201,9 +190,7 @@ class Sim3DNode(Node):
                 self._publish_scan(r)
             self._publish_mechanism_state(r)
         self._publish_true_state()
-        if self._viewer is not None and self._viewer.is_running():
-            self._viewer.sync()
-        self._maybe_screenshot(dt)
+        self._publish_scene_poses()
 
     def _update_robot_mocap(self) -> None:
         for r, robot in self.robots.items():
@@ -512,46 +499,22 @@ class Sim3DNode(Node):
                 top_colors=[o.top_color for o in members]))
         self.pub_towers.publish(msg)
 
-    # --- 表示 ---
+    # --- 表示用 ---
 
-    def _open_viewer(self) -> None:
-        try:
-            import mujoco.viewer
-            self._viewer = mujoco.viewer.launch_passive(self.model, self.data, show_left_ui=False,
-                                                        show_right_ui=False)
-            cam = self._viewer.cam
-            cam.lookat[:] = (5.5, 4.5, 0.3)
-            cam.distance, cam.elevation, cam.azimuth = 14.0, -50.0, 90.0
-        except Exception as e:  # 画面の無い環境などでは表示なしで続ける
-            self.get_logger().warn(f'MuJoCoのビューアを開けませんでした(表示なしで続行): {e}')
-            self._viewer = None
-
-    def _maybe_screenshot(self, dt: float) -> None:
-        if not self._screenshot_path:
-            return
-        self._screenshot_elapsed += dt
-        if self._screenshot_elapsed < self._screenshot_interval:
-            return
-        self._screenshot_elapsed = 0.0
-        if self._renderer is None:
-            self._renderer = mujoco.Renderer(self.model, 720, 960)
-            self._camera = mujoco.MjvCamera()
-            self._camera.lookat[:] = (5.5, 4.5, 0.3)
-            self._camera.distance, self._camera.elevation, self._camera.azimuth = 14.0, -50.0, 90.0
-        self._renderer.update_scene(self.data, camera=self._camera)
-        image = self._renderer.render()
-        import pygame
-        tmp = self._screenshot_path + '.tmp.png'
-        pygame.image.save(pygame.surfarray.make_surface(image.swapaxes(0, 1)), tmp)
-        os.replace(tmp, self._screenshot_path)
-
-
-class _NullLock:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
+    def _publish_scene_poses(self) -> None:
+        """3D表示は別プロセス(sim_3d_viewer_node)が描く。同じプロセスで描くと、GPUの無い環境の
+        ソフトウェア描画が重くなったときに物理の計算が止まる(描画中は物理を止める必要があるため)。"""
+        msg = PoseArray()
+        msg.header.frame_id = 'field'
+        bodies = [self._robot_body_id[r] for r in ROBOT_IDS] + [o.body_id for o in self.objects]
+        for body_id in bodies:
+            p = self.data.xpos[body_id]
+            q = self.data.xquat[body_id]
+            pose = Pose()
+            pose.position.x, pose.position.y, pose.position.z = float(p[0]), float(p[1]), float(p[2])
+            pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z = (float(x) for x in q)
+            msg.poses.append(pose)
+        self.pub_scene_poses.publish(msg)
 
 
 def main(args=None):
@@ -562,8 +525,6 @@ def main(args=None):
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         pass
     finally:
-        if node._viewer is not None:
-            node._viewer.close()
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

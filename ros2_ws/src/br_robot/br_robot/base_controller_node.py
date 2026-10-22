@@ -11,6 +11,7 @@ from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from rclpy.node import Node
 
 from br_strategy_sim.robot_spec import body_axes
+from br_strategy_sim.steady_clock import steady_clock
 
 from .common import declare_robot, yaw_from_quaternion
 
@@ -30,19 +31,20 @@ class BaseControllerNode(Node):
         self.pub = self.create_publisher(Twist, f'/{self._robot}/base_cmd', 10)
         self.create_subscription(Twist, f'/{self._robot}_cmd_vel', self._on_cmd, 10)
         self.create_subscription(PoseWithCovarianceStamped, f'/{self._robot}_pose_estimated', self._on_pose, 10)
-        self.create_timer(1.0 / RATE_HZ, self._tick)
+        self._steady = steady_clock()
+        self.create_timer(1.0 / RATE_HZ, self._tick, clock=steady_clock())
 
     def _on_pose(self, msg: PoseWithCovarianceStamped) -> None:
         self._yaw = yaw_from_quaternion(msg.pose.pose.orientation)
 
     def _on_cmd(self, msg: Twist) -> None:
         self._cmd = msg
-        self._cmd_time = self.get_clock().now()
+        self._cmd_time = self._steady.now()
         self._publish()
 
     def _tick(self) -> None:
         if self._cmd_time is not None and \
-                (self.get_clock().now() - self._cmd_time).nanoseconds / 1e9 > CMD_TIMEOUT_S:
+                (self._steady.now() - self._cmd_time).nanoseconds / 1e9 > CMD_TIMEOUT_S:
             self._cmd = Twist()
             self._cmd_time = None
         self._publish()

@@ -73,6 +73,7 @@ from .physics_blocks import (
 )
 from .robot_body import M_TO_MM, RobotBody, add_static_field, make_robot_body
 from .robot_spec import declare_robot_specs
+from .steady_clock import steady_clock
 
 PHYSICS_HZ = 60.0
 
@@ -232,7 +233,7 @@ class SimBridgeNode(Node):
         self.pub_mustika_pose = self.create_publisher(MustikaPose, '/true_state/mustika_pose', 10)
         self.pub_tower_state = self.create_publisher(TowerArray, '/true_state/tower_state', 10)
 
-        self.create_timer(1.0 / PHYSICS_HZ, self._step_physics)
+        self.create_timer(1.0 / PHYSICS_HZ, self._step_physics, clock=steady_clock())
 
     def _on_br_cmd_vel(self, msg: Twist) -> None:
         if self._match_ended:

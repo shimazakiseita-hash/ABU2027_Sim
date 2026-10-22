@@ -38,8 +38,8 @@ class SimHarness:
 
     def __init__(self, enable_decision: bool = True, physics: str = '2d'):
         if physics == '3d':
-            # 3Dシムのビューアを開かない・観測ノードは推定位置を出さない(全ノード共通の指定)
-            rclpy.init(args=['--ros-args', '-p', 'show_viewer:=false', '-p', 'publish_pose:=false'])
+            # 観測ノードは推定位置を出さない(推測航法が出す)
+            rclpy.init(args=['--ros-args', '-p', 'publish_pose:=false'])
             from br_robot.base_controller_node import BaseControllerNode
             from br_robot.mechanism_controller_node import MechanismControllerNode
             from br_robot.odometry_node import OdometryNode

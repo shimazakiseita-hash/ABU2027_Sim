@@ -53,6 +53,7 @@ from .decision_common import (
 )
 from .navigation import GridMap, Navigator
 from .robot_spec import declare_robot_specs
+from .steady_clock import steady_clock
 
 # 物をつかみに寄るとき、把持レンジ(機体仕様)よりこれだけ手前で止まる
 # (観測ノイズや押し合いでレンジぎりぎりの外に出ないように)
@@ -135,7 +136,7 @@ class BrDecisionTrNode(Node):
         self.create_subscription(DetectedMustika, '/detected_mustika', self._on_mustika, 10)
         self.create_subscription(TowerArray, '/detected_towers', self._on_towers, 10)
 
-        self.create_timer(1.0 / CONTROL_HZ, self._tick)
+        self.create_timer(1.0 / CONTROL_HZ, self._tick, clock=steady_clock())
 
     def _on_pose(self, msg: PoseWithCovarianceStamped) -> None:
         self._pose = msg

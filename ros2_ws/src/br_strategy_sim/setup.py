@@ -28,6 +28,7 @@ setup(
         'console_scripts': [
             'br_sim_bridge_node = br_strategy_sim.sim_bridge_node:main',
             'br_sim_3d_node = br_strategy_sim.sim_3d_node:main',
+            'br_sim_3d_viewer_node = br_strategy_sim.sim_3d_viewer_node:main',
             'br_referee_node = br_strategy_sim.br_referee_node:main',
             'br_observation_node = br_strategy_sim.br_observation_node:main',
             'br_visualizer_node = br_strategy_sim.br_visualizer_node:main',

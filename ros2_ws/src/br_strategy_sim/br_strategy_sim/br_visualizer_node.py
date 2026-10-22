@@ -23,6 +23,7 @@ from std_msgs.msg import Int32
 from br_msgs.msg import BlockArray, GripperCmd, MustikaPose, RobotPose, TowerArray
 
 from . import field_drawing as fd
+from .steady_clock import steady_clock
 
 RENDER_HZ = 30.0
 
@@ -65,7 +66,7 @@ class BrVisualizerNode(Node):
         self.create_subscription(GripperCmd, '/tr_gripper_cmd', lambda m: self._on_gripper('tr', m), 10)
         self.create_subscription(GripperCmd, '/br_gripper_cmd', lambda m: self._on_gripper('br', m), 10)
 
-        self.create_timer(1.0 / RENDER_HZ, self._render)
+        self.create_timer(1.0 / RENDER_HZ, self._render, clock=steady_clock())
 
     def _on_br_pose(self, msg: RobotPose) -> None:
         self._br_pose = msg

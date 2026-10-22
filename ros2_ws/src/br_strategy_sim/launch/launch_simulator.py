@@ -77,7 +77,12 @@ def generate_launch_description():
         Node(package='br_strategy_sim', executable='br_sim_bridge_node', name='br_sim_bridge_node',
              parameters=[spec], condition=is_2d),
         Node(package='br_strategy_sim', executable='br_sim_3d_node', name='br_sim_3d_node',
-             parameters=[{'show_viewer': LaunchConfiguration('show_viewer')}, spec], condition=is_3d),
+             parameters=[spec], condition=is_3d),
+        # 3D表示は物理と別プロセス(同じプロセスで描くと、GPUの無い環境で描画が重いときに物理が止まる)
+        Node(package='br_strategy_sim', executable='br_sim_3d_viewer_node', name='br_sim_3d_viewer_node',
+             parameters=[spec], condition=IfCondition(PythonExpression([
+                 "'", LaunchConfiguration('physics'), "' == '3d' and '",
+                 LaunchConfiguration('show_viewer'), "'.lower() == 'true'"]))),
         *robot_nodes,
         Node(
             package='br_strategy_sim',

@@ -49,6 +49,7 @@ from .decision_common import (
 )
 from .navigation import GridMap, Navigator
 from .robot_spec import declare_robot_specs
+from .steady_clock import steady_clock
 
 CONTROL_HZ = 10.0
 # 機構の動作時間(機体仕様)にこれだけ足した時間で、つかめない/置けない場合はやり直す
@@ -122,7 +123,7 @@ class BrDecisionBrNode(Node):
         self.create_subscription(DetectedBlockArray, '/detected_blocks', self._on_blocks, 10)
         self.create_subscription(DetectedMustika, '/detected_mustika', self._on_mustika, 10)
 
-        self.create_timer(1.0 / CONTROL_HZ, self._tick)
+        self.create_timer(1.0 / CONTROL_HZ, self._tick, clock=steady_clock())
 
     def _on_pose(self, msg: PoseWithCovarianceStamped) -> None:
         self._pose = msg
