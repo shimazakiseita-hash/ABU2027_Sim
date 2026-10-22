@@ -2,3 +2,6 @@ ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
 __pycache__/
+
+# 公式ルールブック(第三者著作物のため再配布しない)
+docs/*.pdf
