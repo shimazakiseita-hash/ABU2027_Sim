@@ -246,3 +246,10 @@ python3 -m pytest ros2_ws/src/br_strategy_sim/test/ -v
 end-to-end検証済み（詳細はCLAUDE.mdの「現在地」参照）。ただし複数塔構成では
 既知の完走率の不安定さがあり、未着手項目（6.5落下・6.6妨害・Phase 2）と
 併せてCLAUDE.mdの「既知の残課題」に記載。
+
+## ライセンス
+
+[Apache License 2.0](LICENSE) © 2026 Seita Shimazaki
+
+ABU Robocon 2027の公式ルールブックは第三者の著作物のため同梱していない。
+フィールド寸法等の数値はルールブックを参照して転記したもの。

@@ -5,7 +5,7 @@
   <version>0.0.0</version>
   <description>ABU Robocon 2027 BR自律システム Phase 1: 2Dシミュレータ (pymunk + pygame)</description>
   <maintainer email="shimazakiseita@gmail.com">Seita Shimazaki</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>

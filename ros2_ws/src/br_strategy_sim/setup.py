@@ -18,7 +18,7 @@ setup(
     maintainer='Seita Shimazaki',
     maintainer_email='shimazakiseita@gmail.com',
     description='ABU Robocon 2027 BR自律システム Phase 1: 2Dシミュレータ (pymunk + pygame)',
-    license='TODO: License declaration',
+    license='Apache-2.0',
     extras_require={
         'test': [
             'pytest',

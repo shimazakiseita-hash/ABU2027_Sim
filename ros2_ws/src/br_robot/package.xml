@@ -5,7 +5,7 @@
   <version>0.0.0</version>
   <description>ABU Robocon 2027 TR/BR: 実機でもシムでも同じものを動かす足回り制御・推測航法・機構制御のノード</description>
   <maintainer email="shimazakiseita@gmail.com">Seita Shimazaki</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache-2.0</license>
 
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>

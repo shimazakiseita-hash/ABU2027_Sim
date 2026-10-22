@@ -15,7 +15,7 @@ setup(
     maintainer='Seita Shimazaki',
     maintainer_email='shimazakiseita@gmail.com',
     description='ABU Robocon 2027 TR/BR: 実機でもシムでも同じものを動かす足回り制御・推測航法・機構制御のノード',
-    license='TODO: License declaration',
+    license='Apache-2.0',
     entry_points={
         'console_scripts': [
             'base_controller_node = br_robot.base_controller_node:main',
